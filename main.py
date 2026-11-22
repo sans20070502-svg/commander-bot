@@ -670,7 +670,7 @@ class PvPTourneyBattleView(discord.ui.View):
         self.players = [p1, p2]
         self.stats = [get_party_combat_stats(p1.id), get_party_combat_stats(p2.id)]
         self.hp = [self.stats["max_hp"], self.stats["max_hp"]]
-        self.sp =
+        self.sp = [0, 0]
         self.guard = [1.0, 1.0]
         self.turn_idx = 0
         self.is_rank_match = is_rank_match
