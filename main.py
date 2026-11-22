@@ -1791,22 +1791,82 @@ async def cmd_set_effect_image(interaction: discord.Interaction, target: str, im
 # ==========================================
 # 7. 起動処理＆ヘルスチェックサーバー
 # ==========================================
+class PermanentHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎰 ガチャを開く", style=discord.ButtonStyle.danger, custom_id="hub_gacha", row=0)
+    async def hub_gacha(self, interaction: discord.Interaction, button: discord.ui.Button):
+        u = get_user(interaction.user.id)
+        free_txt = "🎁 **初回限定・無料10連チケット：残り1回！**\n" if u["free_ten_pull"] > 0 else ""
+        embed = discord.Embed(
+            title="🎰 最高機密 軍事・将軍＆超兵器ガチャ",
+            description=f"{free_txt}💎 所持ダイヤ：**`{u['gems']:,} 個`**（単発 500💎 / 10連 5,000💎）",
+            color=0x8B0000
+        )
+        await interaction.response.send_message(embed=embed, view=GachaView(interaction.user.id), ephemeral=True)
+
+    @discord.ui.button(label="🌍 実在国ストーリー(999)", style=discord.ButtonStyle.primary, custom_id="hub_story", row=0)
+    async def hub_story(self, interaction: discord.Interaction, button: discord.ui.Button):
+        u = get_user(interaction.user.id)
+        st = min(999, u["story_stage"])
+        c_name, flag, p_mult = REAL_COUNTRIES[(st - 1) % len(REAL_COUNTRIES)]
+        scale = (st ** 1.35) * p_mult
+        view = TacticalBattleView(
+            interaction.user.id, f"{flag} Stage.{st}/999：{c_name}",
+            int(3500 + scale * 420), int(420 + scale * 55), int(220 + scale * 30),
+            min(5000, 500 + (st // 5) * 50), int(12000 + st * 800), 0,
+            "mat_parts" if st < 150 else ("mat_alloy" if st < 450 else "mat_quantum"),
+            is_rank=False, story_clear_stage=st
+        )
+        await interaction.response.send_message(embed=view.build_embed(f"🌍 **Stage.{st} / 999 開戦！**"), view=view, ephemeral=True)
+
+    @discord.ui.button(label="🤖 Bot戦(ダイヤ稼ぎ)", style=discord.ButtonStyle.success, custom_id="hub_bot", row=0)
+    async def hub_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = TacticalBattleView(interaction.user.id, "帝国第4機甲大隊", 18000, 1600, 800, 1000, 30000, 0, "mat_parts")
+        await interaction.response.send_message(embed=view.build_embed("🚨 **Bot戦（中級）開戦！**"), view=view, ephemeral=True)
+
+    @discord.ui.button(label="🏅 ランク戦出撃", style=discord.ButtonStyle.danger, custom_id="hub_rank", row=1)
+    async def hub_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
+        u = get_user(interaction.user.id)
+        p = get_party_combat_stats(interaction.user.id)
+        scale = max(1, u["rp"] // 500 + 1)
+        view = TacticalBattleView(interaction.user.id, f"ライバル司令官（Tier.{scale}）", int(p["max_hp"]*0.95), int(p["atk"]*0.9), int(p["def"]*0.9), 1200, 40000, 45, "mat_alloy", is_rank=True)
+        await interaction.response.send_message(embed=view.build_embed("🏅 **ランク戦マッチング成立！**"), view=view, ephemeral=True)
+
+    @discord.ui.button(label="📊 戦績ステータス", style=discord.ButtonStyle.secondary, custom_id="hub_status", row=1)
+    async def hub_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        u = get_user(interaction.user.id)
+        power = calc_total_power(interaction.user.id)
+        rank_info, _ = get_rank_info(interaction.user.id, power)
+        await interaction.response.send_message(
+            f"🎖️ 階級：**{rank_info}**｜異名：**【{u['equipped_title']}】**\n⚔️ 総戦力：**`{power:,}`**｜💎 ダイヤ：**`{u['gems']:,}`**｜🌍 進行：**Stage.{u['story_stage']}/999**",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="🔒 個別極秘基地を作る", style=discord.ButtonStyle.primary, custom_id="hub_room", row=1)
+    async def hub_room(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await cmd_create_base_room.callback(interaction)
+
+@bot.tree.command(name="setup_panel", description="【運営専用】このチャンネルに常設の総合司令部ボタンパネルを設置する")
+@app_commands.describe(title="パネルのタイトル", description="案内文")
+async def cmd_setup_panel(interaction: discord.Interaction, title: str = "🎖️ 最高司令部・総合作戦ターミナル", description: str = "下のボタンからいつでもガチャ・実在国進軍ストーリー・Bot戦・ランク戦・個別基地建設へアクセスできます！"):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
+    embed = discord.Embed(title=title, description=description, color=0x8B0000)
+    await interaction.channel.send(embed=embed, view=PermanentHubView())
+    await interaction.response.send_message("✅ 常設パネルを設置しました！", ephemeral=True)
 @bot.event
 async def on_ready():
     init_db()
     bot.add_view(TourneyJoinView())
+    bot.add_view(PermanentHubView())
     synced = await bot.tree.sync()
     print(f"Commander Bot logged in as {bot.user} | Synced {len(synced)} commands", flush=True)
 
 async def handle_health(reader, writer):
     await reader.read(1024)
-    response = (
-        "HTTP/1.1 200 OK\(\r\\)n"
-        "Content-Type: text/plain\(\r\\)n"
-        "Content-Length: \(24\r\\)n"
-        "\(\r\\)n"
-        "Commander Bot is alive!"
-    )
+    response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 24\r\n\r\nCommander Bot is alive!"
     writer.write(response.encode())
     await writer.drain()
     writer.close()
