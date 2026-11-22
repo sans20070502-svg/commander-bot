@@ -5,11 +5,14 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
+# ==========================================
+# 1. 基本設定・環境変数
+# ==========================================
 JST = timezone(timedelta(hours=9))
 TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
-OWNER_ID = int(os.environ.get("OWNER_ID", "0").strip())  # 運営（創造主）専用ID
+OWNER_ID = int(os.environ.get("OWNER_ID", "0").strip() or "0")
 DB_PATH = "commander.db"
 
 # 運営リアルタイム制御フラグ
@@ -18,7 +21,7 @@ MAINTENANCE_MODE = False
 WORLD_BUFF = "通常情勢（ボーナスなし）"
 
 # ==========================================
-# 1. 階級＆ランク戦ティア定義
+# 2. 階級＆ランク戦ティア＆実在国データ定義
 # ==========================================
 RANKS = [
     (0, "二等兵", "🪖"),
@@ -43,7 +46,6 @@ PVP_TIERS = [
     (10000, "覇王", "🌌"),
 ]
 
-# 実在国の軍事力データ（弱→強の順：999ステージ自動生成のベース）
 REAL_COUNTRIES = [
     ("アイスランド防衛警備隊", "🛡️", 0.5),
     ("ニュージーランド国防軍", "🇳🇿", 0.8),
@@ -67,9 +69,6 @@ REAL_COUNTRIES = [
     ("アメリカ合衆国軍（世界最強・11個空母打撃群＆ステルス部隊）", "🇺🇸", 33.0),
 ]
 
-# ==========================================
-# 2. 全8レアリティ設定（R・SR主力 / UR 0.01%・LR 0.003%・MR 0.001%）
-# ==========================================
 RARITY_CONFIG = {
     "C":   {"name": "コモン",             "color": 0x2ECC71, "weight": 40.000, "fes": 38.000, "emoji": "🟢", "mat": "mat_parts"},
     "UC":  {"name": "アンコモン",         "color": 0xCD7F32, "weight": 28.000, "fes": 27.000, "emoji": "🟤", "mat": "mat_parts"},
@@ -97,7 +96,7 @@ WEAPONS = {
     6: ("【神話兵器】終末の紅蓮魔導機装", 1.75, "全能力+75%・運営級破壊力"),
 }
 # ==========================================
-# 3. データベース初期化＆全20キャラ＋育成データ
+# 3. データベース初期化＆全23キャラ初期データ
 # ==========================================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -142,6 +141,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rarity TEXT,
+            pool_type TEXT DEFAULT 'normal',
             name TEXT,
             role_title TEXT,
             atk INTEGER,
@@ -157,7 +157,12 @@ def init_db():
             image_url TEXT DEFAULT ''
         )
     """)
-    # level: 現在レベル(1〜100), max_level: 上限レベル(20/40/60/80/100), skill_lv: スキルレベル(1〜10)
+    # 既存DBに pool_type カラムがない場合の安全追加
+    try:
+        c.execute("ALTER TABLE cards ADD COLUMN pool_type TEXT DEFAULT 'normal'")
+    except sqlite3.OperationalError:
+        pass
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS user_cards (
             user_id INTEGER,
@@ -170,12 +175,7 @@ def init_db():
             PRIMARY KEY (user_id, card_id)
         )
     """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS effect_media (
-            key TEXT PRIMARY KEY,
-            url TEXT
-        )
-    """)
+    c.execute("CREATE TABLE IF NOT EXISTS effect_media (key TEXT PRIMARY KEY, url TEXT)")
     c.execute("""
         CREATE TABLE IF NOT EXISTS raid_boss (
             id INTEGER PRIMARY KEY,
@@ -195,135 +195,127 @@ def init_db():
             mat_alloy INTEGER DEFAULT 0
         )
     """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS used_codes (
-            user_id INTEGER,
-            code TEXT,
-            PRIMARY KEY (user_id, code)
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS tourney (
-            id INTEGER PRIMARY KEY,
-            title TEXT,
-            status TEXT DEFAULT 'closed',
-            bracket_text TEXT DEFAULT ''
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS tourney_entries (
-            user_id INTEGER PRIMARY KEY,
-            user_name TEXT
-        )
-    """)
+    c.execute("CREATE TABLE IF NOT EXISTS used_codes (user_id INTEGER, code TEXT, PRIMARY KEY (user_id, code))")
+    c.execute("CREATE TABLE IF NOT EXISTS tourney (id INTEGER PRIMARY KEY, title TEXT, status TEXT DEFAULT 'closed', bracket_text TEXT DEFAULT '')")
+    c.execute("CREATE TABLE IF NOT EXISTS tourney_entries (user_id INTEGER PRIMARY KEY, user_name TEXT)")
 
     c.execute("SELECT COUNT(*) FROM cards")
-    if c.fetchone() == 0:
+    if c.fetchone()[0] == 0:
         initial_cards = [
-            # --- C（コモン：緑） ---
-            ("C", "レオン", "量産型装甲車・歩兵分隊長", 140, 160, 110, 120, 700,
+            # --- C（恒常：緑） ---
+            ("C", "normal", "レオン", "量産型装甲車・歩兵分隊長", 140, 160, 110, 120, 700,
              "斉射号令", "味方歩兵の射撃精度と攻撃力を上昇させる",
              "フルバースト突撃", "敵前衛に物理弾幕を浴びせる",
              "【前線適応】基地防衛戦時、自身の防御力+10%", ""),
-            ("C", "ミア", "戦術レーダー観測オペレーター", 100, 130, 160, 150, 750,
+            ("C", "normal", "ミア", "戦術レーダー観測オペレーター", 100, 130, 160, 150, 750,
              "広域索敵スキャン", "敵部隊の隠密状態を解除し命中率を上昇",
              "精密座標ロックオン", "味方全体のクリティカル率を強化",
              "【早期警戒】先制行動確率+15%", ""),
-            ("C", "ガッツ", "前線工兵・装甲整備長", 130, 180, 100, 130, 800,
+            ("C", "normal", "ガッツ", "前線工兵・装甲整備長", 130, 180, 100, 130, 800,
              "緊急フィールド修理", "損傷した味方車両の耐久値を即座に回復",
              "鉄壁バリケード構築", "1ターンの間、味方全体への被ダメージを軽減",
              "【補給効率】軍需工場の資金生産量+5%", ""),
-
-            # --- UC（アンコモン：銅） ---
-            ("UC", "クロエ", "偵察ドローン＆軽装甲指揮官", 300, 260, 380, 310, 2400,
+            # --- UC（恒常：銅） ---
+            ("UC", "normal", "クロエ", "偵察ドローン＆軽装甲指揮官", 300, 260, 380, 310, 2400,
              "スウォームドローン", "無数の小型ドローンで敵単体に3連続ダメージ",
              "上空制圧・爆撃誘導", "敵全体に爆撃ダメージ＋防御ダウン",
              "【高速機動】部隊の行動速度+12%", ""),
-            ("UC", "バルカン", "重火器・自走ロケット砲手", 450, 280, 190, 260, 2600,
+            ("UC", "normal", "バルカン", "重火器・自走ロケット砲手", 450, 280, 190, 260, 2600,
              "焼夷ロケット弾幕", "敵前列に炎上効果付きの砲撃を行う",
              "飽和火力殲滅砲撃", "敵陣全体に重砲撃を叩き込む",
              "【重火器習熟】重装甲ユニットへのダメージ+15%", ""),
-            ("UC", "ハヤテ", "低空強襲ヘリパイロット", 390, 250, 420, 290, 2800,
+            ("UC", "normal", "ハヤテ", "低空強襲ヘリパイロット", 390, 250, 420, 290, 2800,
              "ハイスピード・ストレイフ", "高速旋回しながら敵後衛を機関砲で掃射",
              "ヘルファイア連装斉射", "誘導ミサイル8発で単体目標を粉砕する",
              "【低空回避】敵の対空攻撃を15%の確率で回避", ""),
-
-            # --- R（レア：銀・主力エース枠） ---
-            ("R", "アイゼン", "第7機甲師団・主力戦車エース", 1100, 1150, 700, 950, 12000,
+            # --- R（恒常：銀・主力） ---
+            ("R", "normal", "アイゼン", "第7機甲師団・主力戦車エース", 1100, 1150, 700, 950, 12000,
              "徹甲弾ゼロ距離砲撃", "敵の装甲を50%貫通する主砲撃",
              "鋼鉄の電撃戦（ブリッツ）", "機甲部隊の攻撃力を上げ敵陣を突破",
              "【複合装甲】受ける物理ダメージを常に15%カット", ""),
-            ("R", "セラフィナ", "音速ジェット戦闘機エース", 1250, 820, 1400, 1020, 13500,
+            ("R", "normal", "セラフィナ", "音速ジェット戦闘機エース", 1250, 820, 1400, 1020, 13500,
              "マッハ・ドッグファイト", "超音速機動で敵航空戦力を確実に撃墜",
              "アフターバーナー強襲", "敵全体に空対地ミサイル雨を降らせる",
              "【制空権掌握】戦闘開始時、味方全体の速度+20%", ""),
-            ("R", "カゲロウ", "光学迷彩・超長距離スナイパー", 1380, 740, 1220, 920, 15000,
+            ("R", "normal", "カゲロウ", "光学迷彩・超長距離スナイパー", 1380, 740, 1220, 920, 15000,
              "サイレント・ヘッドショット", "ステルス状態から必ずクリティカルとなる一撃",
              "零距離・対物ライフル貫通", "敵指揮官単体に致命的貫通ダメージ",
              "【光学迷彩】3ターンの間、敵の単体攻撃対象にならない", ""),
-
-            # --- SR（スーパーレア：金・主力将軍枠） ---
-            ("SR", "提督・ジン", "イージス艦隊・海上防衛司令", 2800, 3100, 2100, 3200, 42000,
+            # --- SR（恒常：金・主力） ---
+            ("SR", "normal", "提督・ジン", "イージス艦隊・海上防衛司令", 2800, 3100, 2100, 3200, 42000,
              "イージス迎撃システム", "敵のミサイル・砲撃を無効化し反撃する",
              "トマホーク巡航ミサイル斉射", "敵全軍に広域爆撃＋行動遅延",
              "【艦隊司令の威光】味方全体の防御力+25%", ""),
-            ("SR", "ノヴァ", "ステルス戦略爆撃機エース", 3500, 2300, 3400, 2900, 46000,
+            ("SR", "normal", "ノヴァ", "ステルス戦略爆撃機エース", 3500, 2300, 3400, 2900, 46000,
              "ナイトホーク奇襲", "レーダーに映らず敵拠点へ精密爆撃",
              "デイジーカッター絨毯爆撃", "戦場全体を焼き尽くす超大型爆撃",
              "【完全ステルス】初回スキル発動時、ダメージ1.5倍", ""),
-            ("SR", "ベルグ将軍", "鉄壁の重装甲師団長", 3100, 3600, 2000, 3500, 50000,
+            ("SR", "normal", "ベルグ将軍", "鉄壁の重装甲師団長", 3100, 3600, 2000, 3500, 50000,
              "不落の要塞陣形", "味方全体の受けるダメージを軽減し士気回復",
              "重装機甲・全軍突撃", "防御力を攻撃力に加算し全体攻撃",
              "【百戦錬磨の統率】部隊総戦力がさらに+10%上昇", ""),
-
-            # --- SSR（スーパースペシャル：濃い虹・稀） ---
-            ("SSR", "アストレア", "超巨大空中空母・艦長", 7800, 7200, 6900, 8200, 160000,
+            # --- SSR（恒常：濃い虹） ---
+            ("SSR", "normal", "アストレア", "超巨大空中空母・艦長", 7800, 7200, 6900, 8200, 160000,
              "無人迎撃機スクランブル", "空中空母から50機の自律戦闘機を発進させ制圧",
              "天空からの裁き・荷電粒子砲", "雲上から超高出力レーザーを照射",
              "【空中要塞】全ステータス+20%・状態異常完全無効", ""),
-            ("SSR", "ヴァルキリー・改", "七色強化外骨格・突撃機兵", 9100, 6600, 9500, 7400, 185000,
+            ("SSR", "normal", "ヴァルキリー・改", "七色強化外骨格・突撃機兵", 9100, 6600, 9500, 7400, 185000,
              "プリズム・ブレード連舞", "虹色の高周波ブレードで敵陣を7連撃で切り裂く",
              "オーバードライブ・閃光突貫", "限界出力で敵単体に防御無視ダメージ",
              "【反応装甲】HP50%以下で攻撃力と速度が1.6倍に覚醒", ""),
-            ("SSR", "軍師・シオン", "最高戦略参謀・天才軍師", 7200, 7600, 8600, 9900, 210000,
+            ("SSR", "normal", "軍師・シオン", "最高戦略参謀・天才軍師", 7200, 7600, 8600, 9900, 210000,
              "絶対戦術予測", "敵の次の行動を完全に封じ、味方の火力を強化",
              "チェックメイト・完全包囲網", "敵全軍に戦術爆撃＋全バフ解除",
              "【天才の頭脳】全施設の資源生産効率+25%", ""),
-
-            # --- UR（ウルトラレア：ピンク・極稀 0.01%） ---
-            ("UR", "司令官・カイン", "大陸間戦略核ミサイル統括", 22000, 17000, 18500, 23000, 600000,
+            # --- UR（恒常：ピンク 0.01%） ---
+            ("UR", "normal", "司令官・カイン", "大陸間戦略核ミサイル統括", 22000, 17000, 18500, 23000, 600000,
              "戦術核弾頭・先行着弾", "敵前線を蒸発させる熱核エネルギー攻撃",
              "ICBM・終末の流星群", "12発の多弾頭核ミサイルで敵全軍に壊滅ダメージ",
              "【核抑止力】自身の戦力と核兵器威力が常に+30%", ""),
-            ("UR", "ルミナ", "軌道レーザー衛星オペレーター", 25000, 16000, 24000, 21500, 720000,
+            ("UR", "normal", "ルミナ", "軌道レーザー衛星オペレーター", 25000, 16000, 24000, 21500, 720000,
              "サテライト・ピンポイント照射", "宇宙軌道から敵の主力を一瞬で蒸発させる",
              "ヘブンズ・ジャッジメント", "衛星ネットワーク全開で極太レーザー殲滅",
              "【軌道上の支配者】回避不能の必中攻撃＆防御力60%無視", ""),
-
-            # --- LR（レジェンドレア：白多めの虹・超絶稀 0.003%） ---
-            ("LR", "白銀元帥・アルテミス", "白虹の翼を纏う伝説の英雄", 68000, 62000, 72000, 78000, 2500000,
+            # --- LR（恒常：白虹 0.003%） ---
+            ("LR", "normal", "白銀元帥・アルテミス", "白虹の翼を纏う伝説の英雄", 68000, 62000, 72000, 78000, 2500000,
              "白銀の聖域展開", "味方全軍のダメージ無効バリアを張り全能力上昇",
              "セイクリッド・ノヴァ", "白き虹の極光で戦場全体を浄化する超殲滅波",
              "【伝説のカリスマ】全ユニットの戦力ボーナス+20%", ""),
-
-            # --- MR（ミシックレア：赤と黒・極絶稀 0.001%） ---
-            ("MR", "終末最高司令官・リリス", "深紅の機神を従える絶対支配者", 240000, 210000, 235000, 290000, 12000000,
+            # --- MR（恒常：赤黒 0.001%） ---
+            ("MR", "normal", "終末最高司令官・リリス", "深紅の機神を従える絶対支配者", 240000, 210000, 235000, 290000, 12000000,
              "紅蓮の覇王領域", "漆黒のダークオーラで敵の戦意を砕き全能力を半減させる",
              "終末の紅蓮審判（ラグナロク）", "巨大機神と紅き魔法陣を解放し絶対消滅撃を放つ",
              "【絶対支配者の威圧】あらゆる防御・無敵効果を貫通する神格能力", ""),
-            ("MR", "ゴースト・リーパー", "スカル覆面の伝説特殊突撃兵", 280000, 190000, 310000, 250000, 14000000,
+            ("MR", "normal", "ゴースト・リーパー", "スカル覆面の伝説特殊突撃兵", 280000, 190000, 310000, 250000, 14000000,
              "シャドウ・アサルト", "音もなく背後に回り込み必殺のクリティカル3連撃を叩き込む",
              "死神の無音処刑（レクイエム）", "戦場の全てを闇に沈め単体・全体へ超絶連撃",
              "【死神の加護】先制率100%・回避率50%・クリティカルダメージ3倍", ""),
+            # --- 限定ピックアップ（21〜23体目：限定UR・限定LR・限定MR） ---
+            ("UR", "limited", "【限定】蒼穹の戦乙女・フレイヤ", "次元跳躍型・超電磁レールガン戦姫", 29000, 21000, 28000, 26000, 880000,
+             "ハイパー・レールキャノン", "亜光速の電磁弾で敵陣を一直線に貫通する",
+             "ヴァルハラ・オービタルストライク", "成層圏から無数の電磁槍を降らせ全滅させる",
+             "【限定・次元装甲】被ダメージ30%軽減＆会心率+35%", ""),
+            ("LR", "limited", "【限定】天帝・クロノス", "時空制御型・黄金軌道要塞司令", 82000, 76000, 88000, 92000, 3400000,
+             "クロノ・フリーズ砲撃", "局所時間を停止させ一方的に集中砲火を浴びせる",
+             "エターナル・カタストロフィ", "時空崩壊エネルギーを解放し敵全軍を消滅させる",
+             "【限定・時間支配】毎ターンSP+20%自動回復＆全能力+25%", ""),
+            ("MR", "limited", "【限定】創世機神・セラフZERO", "神域演算・終焉と再生の絶対兵器", 340000, 290000, 350000, 360000, 18000000,
+             "アポカリプス・レイ", "純白と深紅の収束光線で敵の装甲ごと蒸発させる",
+             "ジェネシス・リライト（創世再誕）", "戦場そのものを書き換え敵軍に不可避の消滅ダメージ",
+             "【限定・絶対神格】全ステータス+40%・あらゆる耐性を完全無視", ""),
         ]
         c.executemany("""
             INSERT INTO cards (
-                rarity, name, role_title, atk, dfn, spd, cmd, power,
+                rarity, pool_type, name, role_title, atk, dfn, spd, cmd, power,
                 skill_name, skill_desc, ult_name, ult_desc, passive_ability, image_url
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, initial_cards)
     conn.commit()
     conn.close()
+
+# ==========================================
+# 4. ユーザー・戦力・階級・戦闘ステータス計算
+# ==========================================
 def get_user(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -346,62 +338,39 @@ def get_user(user_id: int):
         row = c.fetchone()
     conn.close()
     return {
-        "user_id": row[0],
-        "funds": row[1],
-        "gems": row[2],
-        "free_ten_pull": row[3],
-        "base_name": row[4],
-        "base_hq": row[5],
-        "base_factory": row[6],
-        "base_nuke_lab": row[7],
-        "base_defense": row[8],
-        "nuke_count": row[9],
-        "nuke_megaton": row[10],
-        "equipped_title": row[11],
-        "custom_rank": row[12],
-        "bonus_power": row[13],
-        "rp": row[14],
-        "story_stage": row[15],
-        "mat_parts": row[16],
-        "mat_alloy": row[17],
-        "mat_quantum": row[18],
-        "mat_mythic": row[19],
-        "party_1": row[20],
-        "party_2": row[21],
-        "party_3": row[22],
-        "expedition_end": row[23],
-        "last_collect": row[24],
+        "user_id": row[0], "funds": row[1], "gems": row[2], "free_ten_pull": row[3],
+        "base_name": row[4], "base_hq": row[5], "base_factory": row[6],
+        "base_nuke_lab": row[7], "base_defense": row[8], "nuke_count": row[9],
+        "nuke_megaton": row[10], "equipped_title": row[11], "custom_rank": row[12],
+        "bonus_power": row[13], "rp": row[14], "story_stage": row[15],
+        "mat_parts": row[16], "mat_alloy": row[17], "mat_quantum": row[18],
+        "mat_mythic": row[19], "party_1": row[20], "party_2": row[21],
+        "party_3": row[22], "expedition_end": row[23], "last_collect": row[24],
     }
 
 def calc_total_power(user_id: int) -> int:
     u = get_user(user_id)
     base_power = (
-        u["base_hq"] * 3000
-        + u["base_factory"] * 2000
-        + u["base_nuke_lab"] * 5000
-        + u["base_defense"] * 2500
-        + u["nuke_count"] * 200000
-        + u["nuke_megaton"] * 15000
+        u["base_hq"] * 3000 + u["base_factory"] * 2000 + u["base_nuke_lab"] * 5000
+        + u["base_defense"] * 2500 + u["nuke_count"] * 200000 + u["nuke_megaton"] * 15000
         + u["bonus_power"]
     )
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT cards.power, user_cards.level, user_cards.skill_lv, user_cards.weapon_id
-        FROM user_cards
-        JOIN cards ON user_cards.card_id = cards.id
+        FROM user_cards JOIN cards ON user_cards.card_id = cards.id
         WHERE user_cards.user_id = ?
     """, (user_id,))
     rows = c.fetchall()
     conn.close()
     card_power = 0
     for p, lv, slv, wid in rows:
-        lv_mult = 1.0 + ((lv - 1) * 0.04)     # Lv.100で基本戦力 約4.96倍
-        skill_mult = 1.0 + ((slv - 1) * 0.10) # Skill Lv.10で さらに1.9倍
+        lv_mult = 1.0 + ((lv - 1) * 0.04)
+        skill_mult = 1.0 + ((slv - 1) * 0.10)
         wep_mult = WEAPONS[wid][1] if wid in WEAPONS else 1.0
         card_power += int(p * lv_mult * skill_mult * wep_mult)
     return base_power + card_power
-
 def get_party_combat_stats(user_id: int):
     u = get_user(user_id)
     party_ids = [u["party_1"], u["party_2"], u["party_3"]]
@@ -411,7 +380,11 @@ def get_party_combat_stats(user_id: int):
     total_atk, total_def, total_spd, avg_skill_mult = 0, 0, 0, 1.0
     skill_mults = []
     for cid in party_ids:
-        c.execute("SELECT * FROM cards WHERE id = ?", (cid,))
+        c.execute("""
+            SELECT id, rarity, pool_type, name, role_title, atk, dfn, spd, cmd, power,
+                   skill_name, skill_desc, ult_name, ult_desc, passive_ability, image_url
+            FROM cards WHERE id = ?
+        """, (cid,))
         card = c.fetchone()
         if not card:
             continue
@@ -422,17 +395,17 @@ def get_party_combat_stats(user_id: int):
         slv = uc[2] if uc else 1
         wid = uc[3] if uc else 0
         mult = (1.0 + (lv - 1) * 0.04) * (WEAPONS[wid][1] if wid in WEAPONS else 1.0)
-        atk = int(card[4] * mult)
-        dfn = int(card[5] * mult)
-        spd = int(card[6] * mult)
+        atk = int(card[5] * mult)
+        dfn = int(card[6] * mult)
+        spd = int(card[7] * mult)
         total_atk += atk
         total_def += dfn
         total_spd += spd
         skill_mults.append(1.0 + (slv - 1) * 0.12)
         members.append({
-            "id": card[0], "rarity": card[1], "name": card[2], "role": card[3],
+            "id": card[0], "rarity": card[1], "pool_type": card[2], "name": card[3], "role": card[4],
             "atk": atk, "dfn": dfn, "spd": spd, "lv": lv, "max_lv": max_lv, "slv": slv,
-            "skill_name": card[9], "ult_name": card[11], "image_url": card[14]
+            "skill_name": card[10], "ult_name": card[12], "image_url": card[15]
         })
     conn.close()
     if skill_mults:
@@ -486,14 +459,17 @@ def get_effect_url(key: str) -> str:
 async def sync_member_nickname(member: discord.Member, power: int):
     rank_info, _ = get_rank_info(member.id, power)
     u = get_user(member.id)
-    base_name = member.name
     suffix = f" 【{rank_info[1]}・{u['equipped_title']}】"
-    new_nick = f"{base_name}{suffix}"[:32]
+    new_nick = f"{member.name}{suffix}"[:32]
     try:
         if member.display_name != new_nick:
             await member.edit(nick=new_nick)
     except Exception:
         pass
+
+# ==========================================
+# 5. ソロ戦術コマンドバトルUI
+# ==========================================
 class TacticalBattleView(discord.ui.View):
     def __init__(self, user_id: int, enemy_name: str, enemy_hp: int, enemy_atk: int, enemy_def: int,
                  reward_gems: int, reward_funds: int, reward_rp: int, reward_mat: str,
@@ -519,7 +495,7 @@ class TacticalBattleView(discord.ui.View):
         self.finished = False
 
     def build_embed(self, log_text: str, color: int = 0xE74C3C, img_url: str = ""):
-        lead = self.p_stats["members"] if self.p_stats["members"] else None
+        lead = self.p_stats["members"][0] if self.p_stats["members"] else None
         party_names = " / ".join([f"{m['name']}(Lv.{m['lv']}・S{m['slv']})" for m in self.p_stats["members"]]) or "初期歩兵小隊"
         embed = discord.Embed(
             title=f"⚔️ 戦術コマンドバトル｜Turn {self.turn}",
@@ -662,6 +638,10 @@ class TacticalBattleView(discord.ui.View):
     @discord.ui.button(label="☢️ 戦略核投下", style=discord.ButtonStyle.danger, row=1)
     async def btn_nuke(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.process_turn(interaction, "nuke")
+
+# ==========================================
+# 6. 対人ランク戦・トーナメントリアルタイムバトルUI
+# ==========================================
 RANK_QUEUE = {}  # {guild_id: discord.Member}
 
 class PvPTourneyBattleView(discord.ui.View):
@@ -691,7 +671,6 @@ class PvPTourneyBattleView(discord.ui.View):
                 inline=True
             )
         return embed
-
     async def act(self, interaction: discord.Interaction, mode: str):
         if self.finished:
             return await interaction.response.send_message("すでに試合は終了しています。", ephemeral=True)
@@ -790,7 +769,7 @@ class RankQueueCancelView(discord.ui.View):
         await interaction.response.edit_message(content="🚫 ランクマッチの待機をキャンセルしました。", embed=None, view=self)
 
 # ==========================================
-# 5. 基地・ガチャ・運営神コンソール・大会募集UI
+# 7. 基地・恒常＆限定ピックアップガチャUI
 # ==========================================
 class BaseUpgradeView(discord.ui.View):
     def __init__(self, user_id: int):
@@ -855,11 +834,34 @@ class BaseUpgradeView(discord.ui.View):
             f"📦 基地から物資を回収しました！\n💰 資金：**+{earn_funds:,} G** / 💎 ダイヤ：**+{earn_gems:,} 個** / 🔩 精密パーツ：**+{earn_parts}個**",
             ephemeral=True
         )
+def build_gacha_embed(user_id: int, banner: str = "normal") -> discord.Embed:
+    u = get_user(user_id)
+    free_txt = "🎁 **初回限定・無料10連チケット：残り1回！**\n" if u["free_ten_pull"] > 0 else ""
+    fes_txt = " 【🔥確率2倍フェス開催中】" if FESTIVAL_ACTIVE else ""
+    if banner == "limited":
+        title = f"🔴 限定ピックアップガチャ（特別参戦）{fes_txt}"
+        banner_desc = "✨ **限定UR・限定LR・限定MR 参戦中！**（C・UC・R共通＋限定キャラ排出）\n"
+        color = 0xE74C3C
+    else:
+        title = f"🔵 恒常・軍事＆将軍＆超兵器ガチャ{fes_txt}"
+        banner_desc = "🛡️ **標準軍事ラインナップ**（恒常C〜MR全20体排出）\n"
+        color = 0x3498DB
+    return discord.Embed(
+        title=title,
+        description=(
+            f"{free_txt}{banner_desc}"
+            "🟢 **C** (40%) / 🟤 **UC** (28%) / ⚪ **R【主力】** (20%) / 🟡 **SR【主力】** (10.5%)\n"
+            "🌈 **SSR【稀】** (1.486%) / 🩷 **UR【極稀】** (0.01%) / ✨ **LR【超絶稀】** (0.003%) / 🩸 **MR【極絶稀】** (0.001%)\n\n"
+            f"💎 所持機密ダイヤ：**`{u['gems']:,} 個`**（単発 500💎 / 10連 5,000💎）"
+        ),
+        color=color
+    )
 
 class GachaView(discord.ui.View):
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, banner: str = "normal"):
         super().__init__(timeout=180)
         self.user_id = user_id
+        self.banner = banner
 
     async def pull_gacha(self, interaction: discord.Interaction, times: int, use_free_ten: bool = False):
         if interaction.user.id != self.user_id:
@@ -895,13 +897,27 @@ class GachaView(discord.ui.View):
 
         for _ in range(times):
             chosen_r = random.choices(rarities, weights=weights, k=1)
-            c.execute("SELECT * FROM cards WHERE rarity = ?", (chosen_r,))
-            pool = c.fetchall()
-            if not pool:
-                c.execute("SELECT * FROM cards")
+            if self.banner == "limited" and chosen_r in ("UR", "LR", "MR"):
+                c.execute("SELECT * FROM cards WHERE rarity = ? AND pool_type = 'limited'", (chosen_r,))
                 pool = c.fetchall()
+                if not pool:
+                    c.execute("SELECT * FROM cards WHERE rarity = ?", (chosen_r,))
+                    pool = c.fetchall()
+            elif self.banner == "normal":
+                c.execute("SELECT * FROM cards WHERE rarity = ? AND pool_type = 'normal'", (chosen_r,))
+                pool = c.fetchall()
+            else:
+                c.execute("SELECT * FROM cards WHERE rarity = ?", (chosen_r,))
+                pool = c.fetchall()
+
+            if not pool:
+                c.execute("SELECT * FROM cards WHERE pool_type = 'normal'")
+                pool = c.fetchall()
+
             card = random.choice(pool)
             cid = card
+            c_rarity = card
+            c_name = card
 
             c.execute("SELECT count, max_level FROM user_cards WHERE user_id = ? AND card_id = ?", (self.user_id, cid))
             existing = c.fetchone()
@@ -919,20 +935,21 @@ class GachaView(discord.ui.View):
                 )
                 note = f"🔓 上限解放 → **Lv.{new_max}**" if new_max > existing else "✨ 上限Lv.100解放済"
 
-            results.append((card, note))
-            r_idx = rarities.index(card)
+            results.append((c_rarity, c_name, note))
+            r_idx = rarities.index(c_rarity)
             if r_idx > best_rank_idx:
                 best_rank_idx = r_idx
                 best_card = card
 
         unlocked_msg = ""
-        if best_card == "MR":
+        best_rarity = best_card
+        if best_rarity == "MR":
             c.execute("INSERT OR IGNORE INTO user_titles (user_id, title) VALUES (?, ?)", (self.user_id, "漆黒の覇王"))
             unlocked_msg = "\n🩸 **【極絶稀 0.001%降臨！！】特別異名【漆黒の覇王】を解放！**"
-        elif best_card == "LR":
+        elif best_rarity == "LR":
             c.execute("INSERT OR IGNORE INTO user_titles (user_id, title) VALUES (?, ?)", (self.user_id, "終末の設計者"))
             unlocked_msg = "\n✨ **【超絶稀 0.003%降臨！！】特別異名【終末の設計者】を解放！**"
-        elif best_card == "UR":
+        elif best_rarity == "UR":
             c.execute("INSERT OR IGNORE INTO user_titles (user_id, title) VALUES (?, ?)", (self.user_id, "核のボタンを押す者"))
             unlocked_msg = "\n🩷 **【極稀 0.01%降臨！！】特別異名【核のボタンを押す者】を解放！**"
 
@@ -943,16 +960,17 @@ class GachaView(discord.ui.View):
         if isinstance(interaction.user, discord.Member):
             await sync_member_nickname(interaction.user, power)
 
-        r_conf = RARITY_CONFIG[best_card]
-        lines = [f"{RARITY_CONFIG[cd]['emoji']} **[{cd}] {cd}**｜{nt}" for cd, nt in results]
+        r_conf = RARITY_CONFIG[best_rarity]
+        lines = [f"{RARITY_CONFIG[r]['emoji']} **[{r}] {nm}**｜{nt}" for r, nm, nt in results]
+        banner_tag = "🔴限定PU" if self.banner == "limited" else "🔵恒常"
 
         embed = discord.Embed(
-            title=f"🎰 機密軍事コンテナ開封結果（{times}連）" + (" 【🔥確率2倍フェス中】" if FESTIVAL_ACTIVE else ""),
+            title=f"🎰 [{banner_tag}] 軍事コンテナ開封結果（{times}連）" + (" 【🔥確率2倍フェス中】" if FESTIVAL_ACTIVE else ""),
             description="\n".join(lines) + unlocked_msg,
             color=r_conf["color"]
         )
         embed.add_field(
-            name=f"🌟 最高排出：[{best_card}] {best_card}（{best_card}）",
+            name=f"🌟 最高排出：[{best_rarity}] {best_card}（{best_card}）",
             value=(
                 f"⚔️ ATK:`{best_card:,}` / 🛡️ DEF:`{best_card:,}` / ⚡ SPD:`{best_card:,}`\n"
                 f"🔹 **スキル【{best_card}】** / 🔥 **必殺技【{best_card}】**"
@@ -963,18 +981,31 @@ class GachaView(discord.ui.View):
             embed.set_image(url=best_card)
         await interaction.response.send_message(embed=embed)
 
-    @discord.ui.button(label="🎁 初回限定・無料10連", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🔵 恒常ガチャ", style=discord.ButtonStyle.primary, row=0)
+    async def switch_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ 他の司令官のガチャ画面です。", ephemeral=True)
+        self.banner = "normal"
+        await interaction.response.edit_message(embed=build_gacha_embed(self.user_id, "normal"), view=self)
+
+    @discord.ui.button(label="🔴 限定ピックアップ", style=discord.ButtonStyle.danger, row=0)
+    async def switch_limited(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ 他の司令官のガチャ画面です。", ephemeral=True)
+        self.banner = "limited"
+        await interaction.response.edit_message(embed=build_gacha_embed(self.user_id, "limited"), view=self)
+
+    @discord.ui.button(label="🎁 初回限定・無料10連", style=discord.ButtonStyle.success, row=1)
     async def pull_free(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.pull_gacha(interaction, 10, use_free_ten=True)
 
-    @discord.ui.button(label="🎲 単発召集（500💎）", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🎲 単発召集（500💎）", style=discord.ButtonStyle.secondary, row=1)
     async def pull_1(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.pull_gacha(interaction, 1, use_free_ten=False)
 
-    @discord.ui.button(label="🔥 10連召集（5,000💎）", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="🔥 10連召集（5,000💎）", style=discord.ButtonStyle.danger, row=1)
     async def pull_10(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.pull_gacha(interaction, 10, use_free_ten=False)
-
 class AdminGodView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
@@ -1018,7 +1049,7 @@ class AdminGodView(discord.ui.View):
         conn.close()
         await interaction.response.send_message("🏰 **マイ基地の全施設を Lv.99（限界突破MAX）へ引き上げました！**", ephemeral=True)
 
-    @discord.ui.button(label="🩸 全MR・全20キャラ即時Lv.100＆Skill10召喚", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="🩸 全キャラ即時Lv.100＆Skill10召喚", style=discord.ButtonStyle.danger, row=1)
     async def god_summon_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != OWNER_ID:
             return await interaction.response.send_message("❌ 運営専用権限です。", ephemeral=True)
@@ -1033,11 +1064,11 @@ class AdminGodView(discord.ui.View):
                 VALUES (?, ?, 10, 100, 100, 10, 6)
                 ON CONFLICT(user_id, card_id) DO UPDATE SET count = 10, level = 100, max_level = 100, skill_lv = 10, weapon_id = 6
             """, (OWNER_ID, cid))
-        c.execute("UPDATE users SET party_1 = 19, party_2 = 20, party_3 = 18 WHERE user_id = ?", (OWNER_ID,))
+        c.execute("UPDATE users SET party_1 = 23, party_2 = 20, party_3 = 22 WHERE user_id = ?", (OWNER_ID,))
         conn.commit()
         conn.close()
         power = calc_total_power(OWNER_ID)
-        await interaction.response.send_message(f"🩸 **MRを含む全{len(all_ids)}体を【Lv.100 MAX・Skill Lv.10・神話兵器装備】で召喚しました！**\n💥 総戦力：**`{power:,}`**", ephemeral=True)
+        await interaction.response.send_message(f"🩸 **限定MRを含む全{len(all_ids)}体を【Lv.100 MAX・Skill Lv.10・神話兵器装備】で召喚しました！**\n💥 総戦力：**`{power:,}`**", ephemeral=True)
 
     @discord.ui.button(label="🔥 ガチャ確率2倍フェス ON/OFF", style=discord.ButtonStyle.secondary, row=2)
     async def toggle_fes(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1094,6 +1125,9 @@ class TourneyJoinView(discord.ui.View):
         await interaction.response.send_message(
             f"✅ **{interaction.user.display_name}** が大会にエントリーしました！（現在の参加者：**{len(all_names)}名**：{', '.join(all_names)}）"
         )
+# ==========================================
+# 8. Bot初期化＆運営専用コマンド群
+# ==========================================
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -1130,6 +1164,7 @@ async def cmd_maint_reward(interaction: discord.Interaction, gems: int = 3000, f
         color=0xF1C40F
     )
     await interaction.response.send_message(embed=embed)
+
 @bot.tree.command(name="god_edit", description="【運営専用】自分の戦力・資金・ダイヤ・階級・異名を自由改変する")
 @app_commands.describe(field="power / funds / gems / nuke / rp / story / rank / title", value="設定する値")
 async def cmd_god_edit(interaction: discord.Interaction, field: str, value: str):
@@ -1184,6 +1219,174 @@ async def cmd_god_edict(interaction: discord.Interaction, target: discord.Member
     conn.close()
     await sync_member_nickname(target, calc_total_power(target.id))
     await interaction.response.send_message(embed=discord.Embed(title="⚖️ 最高統帥の布告", description=msg, color=color))
+
+@bot.tree.command(name="set_card_pool", description="【運営専用】ガチャの中身変更：キャラの排出区分を恒常/限定/排出停止に切り替える")
+@app_commands.describe(card_id="変更するキャラID", pool_type="normal（恒常） / limited（限定PU） / disabled（排出停止）")
+async def cmd_set_card_pool(interaction: discord.Interaction, card_id: int, pool_type: str):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
+    pt = pool_type.lower().strip()
+    if pt not in ("normal", "limited", "disabled"):
+        return await interaction.response.send_message("❌ `normal` / `limited` / `disabled` のいずれかを指定してください。", ephemeral=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT name, rarity FROM cards WHERE id = ?", (card_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return await interaction.response.send_message("❌ 指定されたカードIDは存在しません。", ephemeral=True)
+    c.execute("UPDATE cards SET pool_type = ? WHERE id = ?", (pt, card_id))
+    conn.commit()
+    conn.close()
+    labels = {"normal": "🔵 恒常ガチャ", "limited": "🔴 限定ピックアップ", "disabled": "🚫 ガチャ排出停止（封印）"}
+    await interaction.response.send_message(f"✅ **ガチャ中身変更完了！**\n`ID:{card_id}` **[{row}] {row}** → **{labels[pt]}** に設定しました！")
+
+@bot.tree.command(name="edit_card", description="【運営専用】既存キャラのレアリティやステータス・スキル名を直接編集する")
+@app_commands.describe(card_id="編集するキャラID", field="rarity / name / power / atk / dfn / spd / skill_name / ult_name", value="新しい値")
+async def cmd_edit_card(interaction: discord.Interaction, card_id: int, field: str, value: str):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
+    allowed = {"rarity", "name", "power", "atk", "dfn", "spd", "skill_name", "ult_name"}
+    f = field.lower().strip()
+    if f not in allowed:
+        return await interaction.response.send_message(f"❌ 編集可能項目：{', '.join(allowed)}", ephemeral=True)
+    val = int(value) if f in {"power", "atk", "dfn", "spd"} else value.strip()
+    if f == "rarity" and val not in RARITY_CONFIG:
+        return await interaction.response.send_message("❌ レアリティは C / UC / R / SR / SSR / UR / LR / MR を指定してください。", ephemeral=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(f"UPDATE cards SET {f} = ? WHERE id = ?", (val, card_id))
+    updated = c.rowcount
+    conn.commit()
+    conn.close()
+    if updated == 0:
+        return await interaction.response.send_message("❌ そのカードIDは存在しません。", ephemeral=True)
+    await interaction.response.send_message(f"🛠️ **キャラデータ改変完了！** `ID:{card_id}` の `{f}` を **`{val}`** に更新しました！")
+@bot.tree.command(name="add_character", description="【運営専用】新キャラ・限定キャラをデータベースへ無限追加する")
+@app_commands.describe(
+    name="キャラ名",
+    role_title="肩書き・異名",
+    rarity="C / UC / R / SR / SSR / UR / LR / MR",
+    pool_type="normal（恒常） または limited（限定PU）",
+    atk="攻撃力",
+    dfn="防御力",
+    spd="速度",
+    cmd="統率力",
+    power="基本戦力",
+    skill_name="固有スキル名",
+    skill_desc="固有スキル説明",
+    ult_name="必殺奥義名",
+    ult_desc="必殺奥義説明",
+    image_url="画像またはGIFのURL（任意）"
+)
+async def cmd_add_character(
+    interaction: discord.Interaction,
+    name: str,
+    role_title: str,
+    rarity: str,
+    pool_type: str,
+    atk: int,
+    dfn: int,
+    spd: int,
+    cmd: int,
+    power: int,
+    skill_name: str,
+    skill_desc: str,
+    ult_name: str,
+    ult_desc: str,
+    image_url: str = ""
+):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
+    r = rarity.upper().strip()
+    pt = pool_type.lower().strip()
+    if r not in RARITY_CONFIG:
+        return await interaction.response.send_message("❌ レアリティは C〜MR を指定してください。", ephemeral=True)
+    if pt not in ("normal", "limited"):
+        return await interaction.response.send_message("❌ pool_type は `normal` または `limited` を指定してください。", ephemeral=True)
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO cards (
+            rarity, pool_type, name, role_title, atk, dfn, spd, cmd, power,
+            skill_name, skill_desc, ult_name, ult_desc, passive_ability, image_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        r, pt, name.strip(), role_title.strip(), atk, dfn, spd, cmd, power,
+        skill_name.strip(), skill_desc.strip(), ult_name.strip(), ult_desc.strip(),
+        "【新鋭戦力】特殊作戦行動時に全能力+15%", image_url.strip()
+    ))
+    new_id = c.lastrowid
+    conn.commit()
+    conn.close()
+
+    rc = RARITY_CONFIG[r]
+    pool_label = "🔴 限定ピックアップ" if pt == "limited" else "🔵 恒常ガチャ"
+    embed = discord.Embed(
+        title=f"🆕 新規ユニット実装完了！｜ID:{new_id}",
+        description=f"{rc['emoji']} **[{r}] {name}**（{role_title}）\nガチャ区分：**{pool_label}** / 基本戦力：**`+{power:,}`**",
+        color=rc["color"]
+    )
+    embed.add_field(name="📊 ステータス", value=f"ATK:`{atk:,}` / DEF:`{dfn:,}` / SPD:`{spd:,}` / 統率:`{cmd:,}`", inline=False)
+    embed.add_field(name=f"🔹 スキル【{skill_name}】", value=skill_desc, inline=True)
+    embed.add_field(name=f"🔥 必殺技【{ult_name}】", value=ult_desc, inline=True)
+    if image_url.strip():
+        embed.set_image(url=image_url.strip())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="leak_panel", description="【運営専用】次回実装予定の新キャラ・限定キャラの極秘リーク情報パネルを投稿する")
+@app_commands.describe(title="リークタイトル", rarity="実装予定レアリティ（UR / LR / MRなど）", description="性能・背景・実装予告テキスト", image_url="リーク画像またはGIFのURL（任意）")
+async def cmd_leak_panel(interaction: discord.Interaction, title: str, rarity: str, description: str, image_url: str = ""):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
+    r = rarity.upper().strip()
+    rc = RARITY_CONFIG.get(r, {"color": 0x8B0000, "emoji": "🚨"})
+    embed = discord.Embed(
+        title=f"🚨【極秘機密リーク情報】{rc['emoji']} [{r}] {title}",
+        description=f"{description}\n\n⚠️ *※開発中の機密データにつき、実装時に数値・仕様が調整される場合があります。*",
+        color=rc["color"]
+    )
+    embed.set_footer(text="TOP SECRET // 最高司令部 機密情報局")
+    if image_url.strip():
+        embed.set_image(url=image_url.strip())
+    await interaction.channel.send(embed=embed)
+    await interaction.response.send_message("✅ 極秘リークパネルを投稿しました！", ephemeral=True)
+
+@bot.tree.command(name="set_card_image", description="【運営専用】図鑑・ガチャのカードに画像またはGIFのURLを設定する")
+@app_commands.describe(card_id="設定したいカードのID（/dexで確認）", image_url="Discordに貼った画像またはGIFのリンク")
+async def cmd_set_card_image(interaction: discord.Interaction, card_id: int, image_url: str):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("UPDATE cards SET image_url = ? WHERE id = ?", (image_url.strip(), card_id))
+    updated = c.rowcount
+    conn.commit()
+    conn.close()
+    if updated == 0:
+        return await interaction.response.send_message("❌ そのカードIDは存在しません。", ephemeral=True)
+    embed = discord.Embed(title=f"✅ カードID:{card_id} に画像・GIFを設定しました！", color=0x2ECC71)
+    embed.set_image(url=image_url.strip())
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="set_effect_image", description="【運営専用】基地(/base)や核投下の演出GIF・画像を設定する")
+@app_commands.describe(target="base または nuke", image_url="Discordに貼った画像またはGIFのリンク")
+async def cmd_set_effect_image(interaction: discord.Interaction, target: str, image_url: str):
+    if interaction.user.id != OWNER_ID:
+        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
+    key = target.lower().strip()
+    if key not in ("base", "nuke"):
+        return await interaction.response.send_message("❌ target には `base` または `nuke` を入力してください。", ephemeral=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO effect_media (key, url) VALUES (?, ?)", (key, image_url.strip()))
+    conn.commit()
+    conn.close()
+    embed = discord.Embed(title=f"✅ `{key}` の演出メディアを設定しました！", color=0x2ECC71)
+    embed.set_image(url=image_url.strip())
+    await interaction.response.send_message(embed=embed)
+
 @bot.tree.command(name="create_code", description="【運営専用】シリアルコード（合言葉）を発行する")
 @app_commands.describe(code="合言葉（例：PAYPAY10000）", gems="もらえるダイヤ数", funds="もらえる資金")
 async def cmd_create_code(interaction: discord.Interaction, code: str, gems: int = 3000, funds: int = 30000):
@@ -1221,7 +1424,6 @@ async def cmd_use_code(interaction: discord.Interaction, code: str):
     conn.commit()
     conn.close()
     await interaction.response.send_message(f"🎁 **シリアルコード特典獲得！** ダイヤ `+{row:,}💎` / 資金 `+{row:,}G` を受け取りました！", ephemeral=True)
-
 @bot.tree.command(name="create_base_room", description="自分と運営（創造主）だけが入れる個別プライベート基地チャンネルを作成する")
 async def cmd_create_base_room(interaction: discord.Interaction):
     if check_maint(interaction.user.id):
@@ -1247,6 +1449,7 @@ async def cmd_create_base_room(interaction: discord.Interaction):
     )
     await ch.send(embed=embed, view=BaseUpgradeView(interaction.user.id))
     await interaction.response.send_message(f"✅ 専用のプライベート基地チャンネル {ch.mention} を建設しました！", ephemeral=True)
+
 @bot.tree.command(name="train", description="資金と突破素材を使ってユニットのレベルを上げる（同キャラ被りで最大Lv.100解放）")
 @app_commands.describe(card_id="強化したいユニットID（/dexで確認）", levels="上げるレベル数")
 async def cmd_train(interaction: discord.Interaction, card_id: int, levels: int = 1):
@@ -1265,7 +1468,7 @@ async def cmd_train(interaction: discord.Interaction, card_id: int, levels: int 
         conn.close()
         return await interaction.response.send_message("❌ そのユニットを所持していません。", ephemeral=True)
 
-    cur_lv, max_lv = uc[0], uc[1]
+    cur_lv, max_lv = uc, uc
     if cur_lv >= max_lv:
         conn.close()
         return await interaction.response.send_message(
@@ -1273,7 +1476,7 @@ async def cmd_train(interaction: discord.Interaction, card_id: int, levels: int 
             ephemeral=True
         )
     actual_add = min(levels, max_lv - cur_lv)
-    mat_col = RARITY_CONFIG[card[0]]["mat"]
+    mat_col = RARITY_CONFIG[card]["mat"]
     cost_funds = actual_add * 2000
     cost_mat = actual_add
     if interaction.user.id != OWNER_ID and (u["funds"] < cost_funds or u[mat_col] < cost_mat):
@@ -1289,7 +1492,7 @@ async def cmd_train(interaction: discord.Interaction, card_id: int, levels: int 
     conn.close()
     power = calc_total_power(interaction.user.id)
     await interaction.response.send_message(
-        f"⬆️ **レベルアップ完了！** **[{card[0]}] {card[1]}** が **Lv.{cur_lv} → Lv.{cur_lv + actual_add} / {max_lv}** に成長しました！（総戦力：`{power:,}`）"
+        f"⬆️ **レベルアップ完了！** **[{card}] {card}** が **Lv.{cur_lv} → Lv.{cur_lv + actual_add} / {max_lv}** に成長しました！（総戦力：`{power:,}`）"
     )
 
 @bot.tree.command(name="skill_up", description="突破素材を使ってユニットのスキル＆必殺奥義レベルを強化する（最大Lv.10）")
@@ -1307,11 +1510,11 @@ async def cmd_skill_up(interaction: discord.Interaction, card_id: int):
     if not card or not uc:
         conn.close()
         return await interaction.response.send_message("❌ そのユニットを所持していません。", ephemeral=True)
-    slv = uc[0]
+    slv = uc
     if slv >= 10:
         conn.close()
         return await interaction.response.send_message("✨ すでに **Skill Lv.10（MAX）** です！", ephemeral=True)
-    mat_col = RARITY_CONFIG[card[0]]["mat"]
+    mat_col = RARITY_CONFIG[card]["mat"]
     req_mat = slv * 2
     if interaction.user.id != OWNER_ID and u[mat_col] < req_mat:
         conn.close()
@@ -1321,8 +1524,7 @@ async def cmd_skill_up(interaction: discord.Interaction, card_id: int):
     c.execute("UPDATE user_cards SET skill_lv = skill_lv + 1 WHERE user_id = ? AND card_id = ?", (interaction.user.id, card_id))
     conn.commit()
     conn.close()
-    await interaction.response.send_message(f"🔥 **スキル強化成功！** **[{card[0]}] {card[1]}** のスキルが **Skill Lv.{slv + 1}** になりました！")
-
+    await interaction.response.send_message(f"🔥 **スキル強化成功！** **[{card}] {card}** のスキルが **Skill Lv.{slv + 1}** になりました！")
 @bot.tree.command(name="party", description="バトルに出撃する主力3部隊（前衛・中衛・後衛）を編成する")
 @app_commands.describe(slot1="前衛カードID", slot2="中衛カードID", slot3="後衛カードID")
 async def cmd_party(interaction: discord.Interaction, slot1: int, slot2: int, slot3: int):
@@ -1362,6 +1564,7 @@ async def cmd_equip(interaction: discord.Interaction, card_id: int, weapon_id: i
         return await interaction.response.send_message("❌ そのカードIDを所持していません。", ephemeral=True)
     w_name, _, w_desc = WEAPONS[weapon_id]
     await interaction.response.send_message(f"🔫 カードID:`{card_id}` に専用兵器 **【{w_name}】**（{w_desc}）を装備しました！")
+
 @bot.tree.command(name="story", description="【メインストーリー全999ステージ】実在国の軍事力に挑み世界制覇を進める")
 async def cmd_story(interaction: discord.Interaction):
     if check_maint(interaction.user.id):
@@ -1404,7 +1607,6 @@ async def cmd_battle_bot(interaction: discord.Interaction, difficulty: int = 1):
     st = stages.get(difficulty, stages)
     view = TacticalBattleView(interaction.user.id, st, st, st, st, st, st, 0, st, is_rank=False)
     await interaction.response.send_message(embed=view.build_embed(f"🚨 **Bot戦（難易度Lv.{difficulty}）開戦！** 戦術コマンドを選択せよ！"), view=view)
-
 async def start_or_queue_rank_match(interaction: discord.Interaction):
     if check_maint(interaction.user.id):
         return await interaction.response.send_message("🚧 現在メンテナンス中です。", ephemeral=True)
@@ -1438,7 +1640,6 @@ async def start_or_queue_rank_match(interaction: discord.Interaction):
 async def cmd_rank_match(interaction: discord.Interaction):
     await start_or_queue_rank_match(interaction)
 
-
 @bot.tree.command(name="challenge_god", description="【下剋上挑戦】序列第0位の運営（創造主）に反逆戦を挑む")
 async def cmd_challenge_god(interaction: discord.Interaction):
     if check_maint(interaction.user.id):
@@ -1450,6 +1651,7 @@ async def cmd_challenge_god(interaction: discord.Interaction):
         50000, 10000000, 500, "mat_mythic", is_rank=True
     )
     await interaction.response.send_message(embed=view.build_embed("⚡ **【緊急布告】運営（創造主）への反逆クーデター戦が開戦！！**"), view=view)
+
 @bot.tree.command(name="tourney_open", description="【運営専用】PayPay優勝賞金トーナメント大会の参加募集を開始する")
 @app_commands.describe(title="大会タイトル（例：第1回 覇王決定戦・優勝賞金PayPay 10,000円）")
 async def cmd_tourney_open(interaction: discord.Interaction, title: str = "第1回 覇王決定トーナメント（優勝賞金：PayPay 10,000円）"):
@@ -1498,7 +1700,6 @@ async def cmd_tourney_start(interaction: discord.Interaction):
         color=0xE74C3C
     )
     await interaction.response.send_message(embed=embed)
-
 @bot.tree.command(name="tourney_battle", description="【大会用】対戦相手とリアルタイム対人コマンドバトルを行う")
 @app_commands.describe(opponent="対戦相手のメンバー")
 async def cmd_tourney_battle(interaction: discord.Interaction, opponent: discord.Member):
@@ -1563,25 +1764,25 @@ async def cmd_raid_attack(interaction: discord.Interaction):
     c = conn.cursor()
     c.execute("SELECT name, max_hp, current_hp, image_url, active FROM raid_boss WHERE id = 1")
     boss = c.fetchone()
-    if not boss or boss == 0:
+    if not boss or boss[4] == 0:
         conn.close()
         return await interaction.response.send_message("現在出現中のレイドボスはいません。", ephemeral=True)
     p = get_party_combat_stats(interaction.user.id)
     dmg = p["atk"] * 3 + random.randint(1000, 10000)
-    new_hp = max(0, boss - dmg)
+    new_hp = max(0, boss[2] - dmg)
     if new_hp == 0:
         c.execute("UPDATE raid_boss SET current_hp = 0, active = 0 WHERE id = 1")
         c.execute("UPDATE users SET gems = gems + 10000, mat_mythic = mat_mythic + 2 WHERE user_id = ?", (interaction.user.id,))
-        res_msg = f"🎉 **トドメの一撃！！{boss} を完全撃破！！**\n報酬：💎 ダイヤ `+10,000個` ＆ 🩸 覇王核 `+2個` 獲得！"
+        res_msg = f"🎉 **トドメの一撃！！{boss[0]} を完全撃破！！**\n報酬：💎 ダイヤ `+10,000個` ＆ 🩸 覇王核 `+2個` 獲得！"
     else:
         c.execute("UPDATE raid_boss SET current_hp = ? WHERE id = 1", (new_hp,))
         c.execute("UPDATE users SET gems = gems + 500 WHERE user_id = ?", (interaction.user.id,))
-        res_msg = f"⚔️ {interaction.user.mention} の総攻撃！**`{dmg:,}`** ダメージ！\n残りHP：**`{new_hp:,}`** / `{boss:,}`（参加報酬 +500💎）"
+        res_msg = f"⚔️ {interaction.user.mention} の総攻撃！**`{dmg:,}`** ダメージ！\n残りHP：**`{new_hp:,}`** / `{boss[1]:,}`（参加報酬 +500💎）"
     conn.commit()
     conn.close()
-    embed = discord.Embed(title=f"🔥 レイドボス戦：{boss}", description=res_msg, color=0xE67E22)
-    if boss:
-        embed.set_image(url=boss)
+    embed = discord.Embed(title=f"🔥 レイドボス戦：{boss[0]}", description=res_msg, color=0xE67E22)
+    if boss[3]:
+        embed.set_image(url=boss[3])
     await interaction.response.send_message(embed=embed)
 @bot.tree.command(name="status", description="司令官の階級・序列・異名・総戦力・進行度・突破素材を表示")
 async def cmd_status(interaction: discord.Interaction):
@@ -1597,11 +1798,11 @@ async def cmd_status(interaction: discord.Interaction):
         await sync_member_nickname(interaction.user, power)
 
     embed = discord.Embed(
-        title=f"{rank_info[2]} 最高司令部 個人戦績カード",
+        title=f"{rank_info} 最高司令部 個人戦績カード",
         description=f"**司令官：{interaction.user.mention}**\n**異名：【{u['equipped_title']}】**",
         color=0x8B0000 if interaction.user.id == OWNER_ID else 0xE74C3C
     )
-    embed.add_field(name="🎖️ 階級", value=f"**{rank_info[2]} {rank_info[1]}**", inline=True)
+    embed.add_field(name="🎖️ 階級", value=f"**{rank_info} {rank_info}**", inline=True)
     embed.add_field(name="🌍 制覇進捗", value=f"**{order_str}**", inline=True)
     embed.add_field(name="⚔️ 総戦力", value=f"**`{power:,}`**", inline=True)
     embed.add_field(name="🏅 ランク戦階級", value=f"**{pvp_str}**（`{u['rp']:,} RP`）", inline=True)
@@ -1672,7 +1873,6 @@ async def cmd_expedition(interaction: discord.Interaction):
     conn.commit()
     conn.close()
     await interaction.response.send_message("🚀 **控え部隊を極秘遠征へ派遣しました！**（30分後に再度 `/expedition` で回収できます）")
-
 @bot.tree.command(name="nuke_build", description="戦略核ミサイルを開発・配備する")
 async def cmd_nuke_build(interaction: discord.Interaction):
     if check_maint(interaction.user.id):
@@ -1695,23 +1895,13 @@ async def cmd_nuke_build(interaction: discord.Interaction):
         embed.set_image(url=nuke_img)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="gacha", description="全8レアリティ（C〜MR）軍事・将軍＆超兵器ガチャを開く（単発500💎）")
+@bot.tree.command(name="gacha", description="全8レアリティ（C〜MR）恒常＆限定ピックアップガチャを開く（単発500💎）")
 async def cmd_gacha(interaction: discord.Interaction):
     if check_maint(interaction.user.id):
         return await interaction.response.send_message("🚧 現在メンテナンス中です。", ephemeral=True)
-    u = get_user(interaction.user.id)
-    free_txt = "🎁 **初回限定・無料10連チケット：残り1回！**\n" if u["free_ten_pull"] > 0 else ""
-    embed = discord.Embed(
-        title="🎰 最高機密 軍事・将軍＆超兵器ガチャ" + (" 【🔥確率2倍フェス開催中】" if FESTIVAL_ACTIVE else ""),
-        description=(
-            f"{free_txt}"
-            "🟢 **C** (40%) / 🟤 **UC** (28%) / ⚪ **R【主力】** (20%) / 🟡 **SR【主力】** (10.5%)\n"
-            "🌈 **SSR【稀】** (1.486%) / 🩷 **UR【極稀】** (0.01%) / ✨ **LR【超絶稀】** (0.003%) / 🩸 **MR【極絶稀】** (0.001%)\n\n"
-            f"💎 所持機密ダイヤ：**`{u['gems']:,} 個`**（単発 500💎 / 10連 5,000💎）"
-        ),
-        color=0x8B0000
-    )
-    await interaction.response.send_message(embed=embed, view=GachaView(interaction.user.id))
+    get_user(interaction.user.id)
+    await interaction.response.send_message(embed=build_gacha_embed(interaction.user.id, "normal"), view=GachaView(interaction.user.id, "normal"))
+
 @bot.tree.command(name="title", description="異名（称号）を変更・装備する")
 @app_commands.describe(title_name="装備したい異名を入力")
 async def cmd_title(interaction: discord.Interaction, title_name: str):
@@ -1753,13 +1943,17 @@ async def cmd_ranking(interaction: discord.Interaction, board: str = "rank"):
         embed = discord.Embed(title="🏅 ランクマランキングボード（PvP階級順位表）", description="\n".join(lines), color=0xF1C40F)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="dex", description="ユニット・兵器図鑑（Lv.100上限・スキル・必殺技・画像/GIF表示）")
+@bot.tree.command(name="dex", description="ユニット・兵器図鑑（Lv.100上限・恒常/限定区分・スキル・画像/GIF表示）")
 @app_commands.describe(card_id="詳細を見たいユニットID（省略すると一覧表示）")
 async def cmd_dex(interaction: discord.Interaction, card_id: int = 0):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     if card_id > 0:
-        c.execute("SELECT * FROM cards WHERE id = ?", (card_id,))
+        c.execute("""
+            SELECT id, rarity, pool_type, name, role_title, atk, dfn, spd, cmd, power,
+                   skill_name, skill_desc, ult_name, ult_desc, passive_ability, image_url
+            FROM cards WHERE id = ?
+        """, (card_id,))
         card = c.fetchone()
         c.execute("SELECT level, max_level, skill_lv FROM user_cards WHERE user_id = ? AND card_id = ?", (interaction.user.id, card_id))
         uc = c.fetchone()
@@ -1767,9 +1961,10 @@ async def cmd_dex(interaction: discord.Interaction, card_id: int = 0):
         if not card:
             return await interaction.response.send_message("❌ 指定されたIDは見つかりませんでした。", ephemeral=True)
         rc = RARITY_CONFIG[card]
+        pool_tag = "🔴限定PU" if card == "limited" else ("🚫封印" if card == "disabled" else "🔵恒常")
         lv_txt = f"Lv.{uc} / 上限Lv.{uc}（Skill Lv.{uc}）" if uc else "未所持（初期上限 Lv.20）"
         embed = discord.Embed(
-            title=f"{rc['emoji']} [{card}] {card} — {card}",
+            title=f"{rc['emoji']} [{card}] {card} — {card}（{pool_tag}）",
             description=f"💥 基本戦力：**`+{card:,}`**｜📈 育成状態：**{lv_txt}**",
             color=rc["color"]
         )
@@ -1786,7 +1981,7 @@ async def cmd_dex(interaction: discord.Interaction, card_id: int = 0):
         return await interaction.response.send_message(embed=embed)
 
     c.execute("""
-        SELECT cards.id, cards.rarity, cards.name, cards.role_title,
+        SELECT cards.id, cards.rarity, cards.pool_type, cards.name, cards.role_title,
                COALESCE(user_cards.level, 0), COALESCE(user_cards.max_level, 20), COALESCE(user_cards.skill_lv, 1)
         FROM cards
         LEFT JOIN user_cards ON cards.id = user_cards.card_id AND user_cards.user_id = ?
@@ -1797,51 +1992,17 @@ async def cmd_dex(interaction: discord.Interaction, card_id: int = 0):
     lines = []
     for r in rows:
         rc = RARITY_CONFIG[r]
+        pt = "🔴限定" if r == "limited" else ("🚫停止" if r == "disabled" else "🔵恒常")
         owned = f"Lv.{r}/{r} (S{r})" if r > 0 else "未所持"
-        lines.append(f"`ID:{r:02d}` {rc['emoji']} **[{r}] {r}**（{r}）｜{owned}")
+        lines.append(f"`ID:{r:02d}` {rc['emoji']}[{r}|{pt}] **{r}**｜{owned}")
     embed = discord.Embed(
         title="📖 最高機密 兵器・将軍図鑑（`/dex card_id:番号` で画像・スキル表示）",
-        description="\n".join(lines[:25]),
+        description="\n".join(lines[:30]),
         color=0x34495E
     )
     await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="set_card_image", description="【運営専用】図鑑・ガチャのカードに画像またはGIFのURLを設定する")
-@app_commands.describe(card_id="設定したいカードのID（/dexで確認）", image_url="Discordに貼った画像またはGIFのリンク")
-async def cmd_set_card_image(interaction: discord.Interaction, card_id: int, image_url: str):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE cards SET image_url = ? WHERE id = ?", (image_url.strip(), card_id))
-    updated = c.rowcount
-    conn.commit()
-    conn.close()
-    if updated == 0:
-        return await interaction.response.send_message("❌ そのカードIDは存在しません。", ephemeral=True)
-    embed = discord.Embed(title=f"✅ カードID:{card_id} に画像・GIFを設定しました！", color=0x2ECC71)
-    embed.set_image(url=image_url.strip())
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="set_effect_image", description="【運営専用】基地(/base)や核投下の演出GIF・画像を設定する")
-@app_commands.describe(target="base または nuke", image_url="Discordに貼った画像またはGIFのリンク")
-async def cmd_set_effect_image(interaction: discord.Interaction, target: str, image_url: str):
-    if interaction.user.id != OWNER_ID:
-        return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
-    key = target.lower().strip()
-    if key not in ("base", "nuke"):
-        return await interaction.response.send_message("❌ target には `base` または `nuke` を入力してください。", ephemeral=True)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO effect_media (key, url) VALUES (?, ?)", (key, image_url.strip()))
-    conn.commit()
-    conn.close()
-    embed = discord.Embed(title=f"✅ `{key}` の演出メディアを設定しました！", color=0x2ECC71)
-    embed.set_image(url=image_url.strip())
-    await interaction.response.send_message(embed=embed)
-
 # ==========================================
-# 7. 起動処理＆ヘルスチェックサーバー
+# 9. 常設総合司令部パネル＆起動処理・ヘルスチェックサーバー
 # ==========================================
 class PermanentHubView(discord.ui.View):
     def __init__(self):
@@ -1849,17 +2010,19 @@ class PermanentHubView(discord.ui.View):
 
     @discord.ui.button(label="🎰 ガチャを開く", style=discord.ButtonStyle.danger, custom_id="hub_gacha", row=0)
     async def hub_gacha(self, interaction: discord.Interaction, button: discord.ui.Button):
-        u = get_user(interaction.user.id)
-        free_txt = "🎁 **初回限定・無料10連チケット：残り1回！**\n" if u["free_ten_pull"] > 0 else ""
-        embed = discord.Embed(
-            title="🎰 最高機密 軍事・将軍＆超兵器ガチャ",
-            description=f"{free_txt}💎 所持ダイヤ：**`{u['gems']:,} 個`**（単発 500💎 / 10連 5,000💎）",
-            color=0x8B0000
+        if check_maint(interaction.user.id):
+            return await interaction.response.send_message("🚧 現在メンテナンス中です。", ephemeral=True)
+        get_user(interaction.user.id)
+        await interaction.response.send_message(
+            embed=build_gacha_embed(interaction.user.id, "normal"),
+            view=GachaView(interaction.user.id, "normal"),
+            ephemeral=True
         )
-        await interaction.response.send_message(embed=embed, view=GachaView(interaction.user.id), ephemeral=True)
 
     @discord.ui.button(label="🌍 実在国ストーリー(999)", style=discord.ButtonStyle.primary, custom_id="hub_story", row=0)
     async def hub_story(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if check_maint(interaction.user.id):
+            return await interaction.response.send_message("🚧 現在メンテナンス中です。", ephemeral=True)
         u = get_user(interaction.user.id)
         st = min(999, u["story_stage"])
         c_name, flag, p_mult = REAL_COUNTRIES[(st - 1) % len(REAL_COUNTRIES)]
@@ -1868,26 +2031,31 @@ class PermanentHubView(discord.ui.View):
             interaction.user.id, f"{flag} Stage.{st}/999：{c_name}",
             int(3500 + scale * 420), int(420 + scale * 55), int(220 + scale * 30),
             min(5000, 500 + (st // 5) * 50), int(12000 + st * 800), 0,
-            "mat_parts" if st < 150 else ("mat_alloy" if st < 450 else "mat_quantum"),
+            "mat_parts" if st < 150 else ("mat_alloy" if st < 450 else ("mat_quantum" if st < 800 else "mat_mythic")),
             is_rank=False, story_clear_stage=st
         )
         await interaction.response.send_message(embed=view.build_embed(f"🌍 **Stage.{st} / 999 開戦！**"), view=view, ephemeral=True)
 
     @discord.ui.button(label="🤖 Bot戦(ダイヤ稼ぎ)", style=discord.ButtonStyle.success, custom_id="hub_bot", row=0)
     async def hub_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if check_maint(interaction.user.id):
+            return await interaction.response.send_message("🚧 現在メンテナンス中です。", ephemeral=True)
         view = TacticalBattleView(interaction.user.id, "帝国第4機甲大隊", 18000, 1600, 800, 1000, 30000, 0, "mat_parts")
         await interaction.response.send_message(embed=view.build_embed("🚨 **Bot戦（中級）開戦！**"), view=view, ephemeral=True)
+
     @discord.ui.button(label="🏅 ランク戦出撃", style=discord.ButtonStyle.danger, custom_id="hub_rank", row=1)
     async def hub_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
         await start_or_queue_rank_match(interaction)
-        
+
     @discord.ui.button(label="📊 戦績ステータス", style=discord.ButtonStyle.secondary, custom_id="hub_status", row=1)
     async def hub_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if check_maint(interaction.user.id):
+            return await interaction.response.send_message("🚧 現在メンテナンス中です。", ephemeral=True)
         u = get_user(interaction.user.id)
         power = calc_total_power(interaction.user.id)
         rank_info, _ = get_rank_info(interaction.user.id, power)
         await interaction.response.send_message(
-            f"🎖️ 階級：**{rank_info}**｜異名：**【{u['equipped_title']}】**\n⚔️ 総戦力：**`{power:,}`**｜💎 ダイヤ：**`{u['gems']:,}`**｜🌍 進行：**Stage.{u['story_stage']}/999**",
+            f"🎖️ 階級：**{rank_info} {rank_info}**｜異名：**【{u['equipped_title']}】**\n⚔️ 総戦力：**`{power:,}`**｜💎 ダイヤ：**`{u['gems']:,}`**｜🌍 進行：**Stage.{u['story_stage']}/999**",
             ephemeral=True
         )
 
@@ -1897,12 +2065,17 @@ class PermanentHubView(discord.ui.View):
 
 @bot.tree.command(name="setup_panel", description="【運営専用】このチャンネルに常設の総合司令部ボタンパネルを設置する")
 @app_commands.describe(title="パネルのタイトル", description="案内文")
-async def cmd_setup_panel(interaction: discord.Interaction, title: str = "🎖️ 最高司令部・総合作戦ターミナル", description: str = "下のボタンからいつでもガチャ・実在国進軍ストーリー・Bot戦・ランク戦・個別基地建設へアクセスできます！"):
+async def cmd_setup_panel(
+    interaction: discord.Interaction,
+    title: str = "🎖️ 最高司令部・総合作戦ターミナル",
+    description: str = "下のボタンからいつでもガチャ・実在国進軍ストーリー・Bot戦・ランク戦・個別基地建設へアクセスできます！"
+):
     if interaction.user.id != OWNER_ID:
         return await interaction.response.send_message("❌ 運営専用コマンドです。", ephemeral=True)
     embed = discord.Embed(title=title, description=description, color=0x8B0000)
     await interaction.channel.send(embed=embed, view=PermanentHubView())
     await interaction.response.send_message("✅ 常設パネルを設置しました！", ephemeral=True)
+
 @bot.event
 async def on_ready():
     init_db()
@@ -1911,18 +2084,27 @@ async def on_ready():
     synced = await bot.tree.sync()
     print(f"Commander Bot logged in as {bot.user} | Synced {len(synced)} commands", flush=True)
 
-async def handle_health(reader, writer):
-    await reader.read(1024)
-    response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 24\r\n\r\nCommander Bot is alive!"
-    writer.write(response.encode())
-    await writer.drain()
-    writer.close()
+async def handle_health(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    try:
+        await reader.read(1024)
+        body = b"Commander Bot is alive!"
+        response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            b"Connection: close\r\n\r\n" + body
+        )
+        writer.write(response)
+        await writer.drain()
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 async def main():
     if not TOKEN:
         print("ERROR: DISCORD_TOKEN is empty!", flush=True)
         return
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", "10000"))
     server = await asyncio.start_server(handle_health, "0.0.0.0", port)
     async with server:
         async with bot:
