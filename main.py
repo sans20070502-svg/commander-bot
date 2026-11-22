@@ -9,7 +9,7 @@ from discord.ext import commands, tasks
 
 JST = timezone(timedelta(hours=9))
 TOKEN = os.environ.get("DISCORD_TOKEN", "").strip()
-OWNER_ID = 1389515486534111273  # 運営（創造主）専用ID
+OWNER_ID = int(os.environ.get("OWNER_ID", "0").strip())  # 運営（創造主）専用ID
 DB_PATH = "commander.db"
 
 # 運営リアルタイム制御フラグ
