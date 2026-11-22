@@ -1125,7 +1125,7 @@ class RankQueueCancelView(discord.ui.View):
             embed=None,
             view=self
         )
-　# ==========================================
+# ==========================================
 # 7. 基地・恒常＆限定ピックアップガチャUI
 # ==========================================
 class BaseUpgradeView(discord.ui.View):
