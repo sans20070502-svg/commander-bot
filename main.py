@@ -662,21 +662,25 @@ class TacticalBattleView(discord.ui.View):
     @discord.ui.button(label="☢️ 戦略核投下", style=discord.ButtonStyle.danger, row=1)
     async def btn_nuke(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.process_turn(interaction, "nuke")
+RANK_QUEUE = {}  # {guild_id: discord.Member}
+
 class PvPTourneyBattleView(discord.ui.View):
-    def __init__(self, p1: discord.Member, p2: discord.Member):
+    def __init__(self, p1: discord.Member, p2: discord.Member, is_rank_match: bool = False):
         super().__init__(timeout=300)
         self.players = [p1, p2]
         self.stats = [get_party_combat_stats(p1.id), get_party_combat_stats(p2.id)]
-        self.hp = [self.stats[0]["max_hp"], self.stats[1]["max_hp"]]
-        self.sp = [0, 0]
+        self.hp = [self.stats["max_hp"], self.stats["max_hp"]]
+        self.sp =
         self.guard = [1.0, 1.0]
         self.turn_idx = 0
+        self.is_rank_match = is_rank_match
         self.finished = False
 
     def build_embed(self, log: str, color: int = 0xF1C40F):
         cur_p = self.players[self.turn_idx]
+        mode_title = "🏅 ランクマッチ対人戦" if self.is_rank_match else "🏆 公式トーナメント対人戦"
         embed = discord.Embed(
-            title=f"🏆 公式トーナメント対人戦｜{self.players[0].display_name} vs {self.players[1].display_name}",
+            title=f"{mode_title}｜{self.players.display_name} vs {self.players.display_name}",
             description=f"{log}\n\n👉 **現在の行動ターン：{cur_p.mention}**",
             color=color
         )
@@ -732,11 +736,23 @@ class PvPTourneyBattleView(discord.ui.View):
             self.finished = True
             self.clear_items()
             winner = self.players[me]
-            win_embed = discord.Embed(
-                title="🏆 公式トーナメント 勝者決定！！",
-                description=f"{msg}\n\n🎉 **勝者：{winner.mention} が次戦へ勝ち上がりました！！**",
-                color=0x2ECC71
-            )
+            loser = self.players[opp]
+            if self.is_rank_match:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("UPDATE users SET rp = rp + 50, gems = gems + 1500, mat_alloy = mat_alloy + 1 WHERE user_id = ?", (winner.id,))
+                if loser.id != OWNER_ID:
+                    c.execute("UPDATE users SET rp = MAX(0, rp - 25) WHERE user_id = ?", (loser.id,))
+                conn.commit()
+                conn.close()
+                result_desc = (
+                    f"{msg}\n\n🏆 **勝者：{winner.mention}**（`+50 RP` / 💎 `+1,500個` / ⚙️ 超合金 `+1個`）\n"
+                    f"💀 **敗者：{loser.mention}**（`-25 RP`）"
+                )
+            else:
+                result_desc = f"{msg}\n\n🎉 **勝者：{winner.mention} がトーナメント次戦へ勝ち上がりました！！**"
+
+            win_embed = discord.Embed(title="⚔️ 対人戦 決着！！", description=result_desc, color=0x2ECC71)
             return await interaction.response.edit_message(embed=win_embed, view=self)
 
         self.turn_idx = opp
@@ -757,6 +773,22 @@ class PvPTourneyBattleView(discord.ui.View):
     @discord.ui.button(label="☢️ 戦略核投下", style=discord.ButtonStyle.danger, row=1)
     async def p_nuke(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.act(interaction, "nuke")
+
+class RankQueueCancelView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int):
+        super().__init__(timeout=180)
+        self.guild_id = guild_id
+        self.user_id = user_id
+
+    @discord.ui.button(label="❌ マッチング待機をキャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("❌ 本人のみキャンセルできます。", ephemeral=True)
+        if RANK_QUEUE.get(self.guild_id) and RANK_QUEUE[self.guild_id].id == self.user_id:
+            del RANK_QUEUE[self.guild_id]
+        self.clear_items()
+        await interaction.response.edit_message(content="🚫 ランクマッチの待機をキャンセルしました。", embed=None, view=self)
+
 # ==========================================
 # 5. 基地・ガチャ・運営神コンソール・大会募集UI
 # ==========================================
@@ -1373,19 +1405,39 @@ async def cmd_battle_bot(interaction: discord.Interaction, difficulty: int = 1):
     view = TacticalBattleView(interaction.user.id, st, st, st, st, st, st, 0, st, is_rank=False)
     await interaction.response.send_message(embed=view.build_embed(f"🚨 **Bot戦（難易度Lv.{difficulty}）開戦！** 戦術コマンドを選択せよ！"), view=view)
 
-@bot.tree.command(name="rank_match", description="【ランク戦】ライバル司令官と対戦してランク階級＆RPを上げる")
-async def cmd_rank_match(interaction: discord.Interaction):
+async def start_or_queue_rank_match(interaction: discord.Interaction):
     if check_maint(interaction.user.id):
         return await interaction.response.send_message("🚧 現在メンテナンス中です。", ephemeral=True)
-    u = get_user(interaction.user.id)
-    p = get_party_combat_stats(interaction.user.id)
-    scale = max(1, u["rp"] // 500 + 1)
-    enemy_name = random.choice(["ライバル司令・レグルス", "極東艦隊提督・カグラ", "北境の鉄血将軍・ドラグノフ", "軌道軍団長・セレネ"])
-    e_hp = int(p["max_hp"] * random.uniform(0.85, 1.15))
-    e_atk = int(p["atk"] * random.uniform(0.8, 1.1))
-    e_def = int(p["def"] * random.uniform(0.8, 1.1))
-    view = TacticalBattleView(interaction.user.id, f"{enemy_name}（Tier.{scale}）", e_hp, e_atk, e_def, 1200, 40000, 45, "mat_alloy", is_rank=True)
-    await interaction.response.send_message(embed=view.build_embed("🏅 **ランク戦マッチング成立！** 勝利してランクポイントを奪い取れ！"), view=view)
+    if not interaction.guild:
+        return
+    gid = interaction.guild.id
+    get_user(interaction.user.id)
+    waiting = RANK_QUEUE.get(gid)
+
+    if waiting is None:
+        RANK_QUEUE[gid] = interaction.user
+        embed = discord.Embed(
+            title="📡 ランクマッチ 対戦相手マッチング中…",
+            description=f"**待機中プレイヤー：{interaction.user.mention}**\n他のプレイヤーが `/rank_match`（またはパネルのランク戦ボタン）を押すと即座に開戦します！",
+            color=0x3498DB
+        )
+        return await interaction.response.send_message(embed=embed, view=RankQueueCancelView(gid, interaction.user.id))
+
+    if waiting.id == interaction.user.id:
+        return await interaction.response.send_message("⏳ すでにマッチング待機中です！他のプレイヤーの参加を待っています。", ephemeral=True)
+
+    del RANK_QUEUE[gid]
+    view = PvPTourneyBattleView(waiting, interaction.user, is_rank_match=True)
+    await interaction.response.send_message(
+        content=f"🚨 **ランクマッチ成立！！** {waiting.mention} 🆚 {interaction.user.mention}",
+        embed=view.build_embed(f"🏅 **対人ランク戦 開戦！** 先攻は {waiting.mention} です！"),
+        view=view
+    )
+
+@bot.tree.command(name="rank_match", description="【対人ランク戦】他のプレイヤーと自動マッチングしてRPを奪い合う")
+async def cmd_rank_match(interaction: discord.Interaction):
+    await start_or_queue_rank_match(interaction)
+
 
 @bot.tree.command(name="challenge_god", description="【下剋上挑戦】序列第0位の運営（創造主）に反逆戦を挑む")
 async def cmd_challenge_god(interaction: discord.Interaction):
@@ -1828,11 +1880,10 @@ class PermanentHubView(discord.ui.View):
 
     @discord.ui.button(label="🏅 ランク戦出撃", style=discord.ButtonStyle.danger, custom_id="hub_rank", row=1)
     async def hub_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
-        u = get_user(interaction.user.id)
-        p = get_party_combat_stats(interaction.user.id)
-        scale = max(1, u["rp"] // 500 + 1)
-        view = TacticalBattleView(interaction.user.id, f"ライバル司令官（Tier.{scale}）", int(p["max_hp"]*0.95), int(p["atk"]*0.9), int(p["def"]*0.9), 1200, 40000, 45, "mat_alloy", is_rank=True)
-        await interaction.response.send_message(embed=view.build_embed("🏅 **ランク戦マッチング成立！**"), view=view, ephemeral=True)
+            @discord.ui.button(label="🏅 ランク戦出撃", style=discord.ButtonStyle.danger, custom_id="hub_rank", row=1)
+    async def hub_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await start_or_queue_rank_match(interaction)
+
 
     @discord.ui.button(label="📊 戦績ステータス", style=discord.ButtonStyle.secondary, custom_id="hub_status", row=1)
     async def hub_status(self, interaction: discord.Interaction, button: discord.ui.Button):
