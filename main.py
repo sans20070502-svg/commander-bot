@@ -871,11 +871,10 @@ class GachaView(discord.ui.View):
                 return await interaction.response.send_message("❌ 初回無料10連はすでに使用済みです！", ephemeral=True)
             cost = 0
         else:
-            # 運営もダイヤを消費する仕様（だからこそチート付与に意味がある！）
             cost = 500 * times
             if u["gems"] < cost:
                 return await interaction.response.send_message(
-                    f"❌ 機密ダイヤが不足しています！（必要：`{cost:,}` / 所持：`{u['gems']:,}`）\n※ `/story`（実在国進軍）や `/battle_bot`（Bot戦）でダイヤを稼げます！",
+                    f"❌ 機密ダイヤが不足しています！（必要：`{cost:,}` / 所持：`{u['gems']:,}`）\n※ `/story` や `/battle_bot` でダイヤを稼げます！",
                     ephemeral=True
                 )
 
@@ -975,6 +974,7 @@ class GachaView(discord.ui.View):
     @discord.ui.button(label="🔥 10連召集（5,000💎）", style=discord.ButtonStyle.danger)
     async def pull_10(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.pull_gacha(interaction, 10, use_free_ten=False)
+
 class AdminGodView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
