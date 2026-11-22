@@ -1876,14 +1876,11 @@ class PermanentHubView(discord.ui.View):
     @discord.ui.button(label="🤖 Bot戦(ダイヤ稼ぎ)", style=discord.ButtonStyle.success, custom_id="hub_bot", row=0)
     async def hub_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = TacticalBattleView(interaction.user.id, "帝国第4機甲大隊", 18000, 1600, 800, 1000, 30000, 0, "mat_parts")
-        await interaction.response.send_message(embed=view.build_embed("🚨 **Bot戦（中級）開戦！**"), view=view, ephemeral=True)
-
-    @discord.ui.button(label="🏅 ランク戦出撃", style=discord.ButtonStyle.danger, custom_id="hub_rank", row=1)
-    async def hub_rank(self, interaction: discord.Interaction, button: 
+        await interaction.response.send_message(embed=view.build_embed("🚨 **Bot戦（中級）開戦！**"), view=view, ephemeral=
     @discord.ui.button(label="🏅 ランク戦出撃", style=discord.ButtonStyle.danger, custom_id="hub_rank", row=1)
     async def hub_rank(self, interaction: discord.Interaction, button: discord.ui.Button):
         await start_or_queue_rank_match(interaction)
-
+        
     @discord.ui.button(label="📊 戦績ステータス", style=discord.ButtonStyle.secondary, custom_id="hub_status", row=1)
     async def hub_status(self, interaction: discord.Interaction, button: discord.ui.Button):
         u = get_user(interaction.user.id)
