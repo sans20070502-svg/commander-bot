@@ -2001,6 +2001,87 @@ async def main():
     async with server:
         async with bot:
             await bot.start(TOKEN)
+　　# ==========================================
+# 15. 機能別専用パネル（一番下に追記するだけでOK）
+# ==========================================
+class QuestOnlyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="⚔️ 出撃（経験値狩り・ストーリー）", style=discord.ButtonStyle.danger, custom_id="only_quest_btn")
+    async def q_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await RPGHubPanelView().sortie_btn.callback(interaction)
+
+class GachaOnlyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎰 召喚の祭壇を開く（恒常・限定・武器）", style=discord.ButtonStyle.primary, custom_id="only_gacha_btn")
+    async def g_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await RPGHubPanelView().gacha_btn.callback(interaction)
+
+class ArmoryOnlyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🛡️ 編成・進化（C➡MCR）・売却", style=discord.ButtonStyle.success, custom_id="only_armory_btn")
+    async def a_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await RPGHubPanelView().armory_btn.callback(interaction)
+
+    @discord.ui.button(label="🏛️ 領地施設強化", style=discord.ButtonStyle.secondary, custom_id="only_fac_btn")
+    async def f_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await RPGHubPanelView().facility_btn.callback(interaction)
+
+class RankMatchOnlyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🏆 ランクマッチ対戦開始（待機＆キャンセル）", style=discord.ButtonStyle.danger, custom_id="only_rank_btn")
+    async def r_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await RPGHubPanelView().rank_btn.callback(interaction)
+
+class GuildOnlyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🏰 魔法騎士団本部を開く", style=discord.ButtonStyle.primary, custom_id="only_guild_btn")
+    async def gu_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await RPGHubPanelView().guild_btn.callback(interaction)
+
+class ProfileOnlyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🪪 戦績カード・ランキング・肩書き変更", style=discord.ButtonStyle.secondary, custom_id="only_prof_btn")
+    async def p_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await RPGHubPanelView().profile_btn.callback(interaction)
+
+@bot.tree.command(name="panel_set", description="【創造神専用】チャンネルごとに機能別パネルを設置する")
+@app_commands.describe(panel_type="設置するパネルの種類")
+@app_commands.choices(panel_type=[
+    app_commands.Choice(name="⚔️ 出撃・ストーリーパネル", value="quest"),
+    app_commands.Choice(name="🎰 ガチャ召喚パネル", value="gacha"),
+    app_commands.Choice(name="🛡️ 編成・進化・施設パネル", value="armory"),
+    app_commands.Choice(name="🏆 ランクマッチ闘技場パネル", value="rank"),
+    app_commands.Choice(name="🏰 魔法騎士団本部パネル", value="guild"),
+    app_commands.Choice(name="🪪 戦績・ランキング・肩書きパネル", value="profile"),
+])
+async def cmd_panel_set(interaction: discord.Interaction, panel_type: app_commands.Choice[str]):
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message("❌ 創造神専用コマンドです。", ephemeral=True)
+        return
+    t = panel_type.value
+    configs = {
+        "quest": ("⚔️ 冒険・ストーリー出撃口", "経験値狩り（連戦）および全10章ストーリーモードへ出撃できます。", discord.Color.red(), QuestOnlyView()),
+        "gacha": ("🎰 召喚の祭壇（恒常・限定PU・武器）", "ガチャ石を消費して全200キャラ＆全50武器を召喚できます。", discord.Color.purple(), GachaOnlyView()),
+        "armory": ("🛡️ 鍛冶・育成・領地施設拠点", "キャラ・武器の装備、7段階進化（C➡MCR）、売却、4種の施設強化が行えます。", discord.Color.green(), ArmoryOnlyView()),
+        "rank": ("🏆 ランクマッチ闘技場", "サーバー内プレイヤーと対戦して階級を上げ、1位【👑現・勇者王】を目指せ！", discord.Color.gold(), RankMatchOnlyView()),
+        "guild": ("🏰 魔法騎士団本部", "騎士団の創設・入団・副団長任命・団レベル強化・功績の★ランキングを確認できます。", discord.Color.blurple(), GuildOnlyView()),
+        "profile": ("🪪 冒険者ギルド受付（戦績・肩書き）", "自分の戦績カード確認、サーバー序列ランキング、解放した肩書きの付け替えができます。", discord.Color.teal(), ProfileOnlyView()),
+    }
+    title, desc, col, view = configs[t]
+    await interaction.channel.send(embed=discord.Embed(title=title, description=desc, color=col), view=view)
+    await interaction.response.send_message(f"✅ **{title}** を設置しました！", ephemeral=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
