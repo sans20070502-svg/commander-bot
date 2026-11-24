@@ -2371,11 +2371,8 @@ async def main():
     async with bot:
         await bot.start(token)
 
+from gacha import GachaPanelView
 import addon_pack
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
