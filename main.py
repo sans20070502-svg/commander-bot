@@ -2002,62 +2002,184 @@ async def main():
         async with bot:
             await bot.start(TOKEN)
 # ==========================================
-# 15. 機能別専用パネル（一番下に追記するだけでOK）
+# 15. 機能別専用パネル（修正完全版）
 # ==========================================
-class QuestOnlyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
+async def open_sortie_panel(interaction: discord.Interaction):
+    uid = interaction.user.id
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT story_chapter FROM players WHERE user_id = ?", (uid,)).fetchone()
+    conn.close()
+    _, _, _, pwr = get_player_combat_stats(uid)
+    embed = discord.Embed(
+        title="⚔️ 出撃メニュー",
+        description=f"総合戦闘力：**`{pwr:,}`** ｜ ストーリー：**第 `{p['story_chapter']}` 章**\nどちらに出撃しますか？",
+        color=discord.Color.red()
+    )
+    await interaction.response.send_message(embed=embed, view=SortieSelectView(uid), ephemeral=True)
 
+async def open_gacha_panel(interaction: discord.Interaction):
+    uid = interaction.user.id
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT gems FROM players WHERE user_id = ?", (uid,)).fetchone()
+    conn.close()
+    lim_on = get_state("limited_gacha_active", "0") == "1"
+    lim_title = get_state("limited_gacha_title", "【期間限定】ピックアップ召喚")
+    pu_cid = int(get_state("limited_gacha_char_id", "200"))
+    pu_char = CHARACTERS.get(pu_cid, CHARACTERS[1])
+    lim_desc = f"🌟 **限定開催中**：**{lim_title}**（PU：`[{pu_char['base_rarity']}] {pu_char['name']}`）" if lim_on else "🔒 期間限定ガチャ：準備中"
+    embed = discord.Embed(
+        title="🎰 召喚の祭壇（キャラ＆武器ガチャ）",
+        description=f"💎 所持ガチャ石：**`{p['gems']:,}個`**\n{lim_desc}\n\n・キャラ被り1体ごとに上限 **+20レベ解放**！",
+        color=discord.Color.purple()
+    )
+    await interaction.response.send_message(embed=embed, view=GachaPanelView(uid), ephemeral=True)
+
+async def open_armory_panel(interaction: discord.Interaction):
+    uid = interaction.user.id
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT * FROM players WHERE user_id = ?", (uid,)).fetchone()
+    chars = conn.execute("SELECT * FROM user_chars WHERE user_id = ? ORDER BY level DESC, char_id ASC", (uid,)).fetchall()
+    weapons = conn.execute("SELECT * FROM user_weapons WHERE user_id = ? ORDER BY plus_level DESC, weapon_id ASC", (uid,)).fetchall()
+    conn.close()
+    embed = discord.Embed(
+        title="🛡️ 編成・進化（C→MCR）・売却メニュー",
+        description=f"💰 ゴールド：**`{p['gold']:,}G`** ｜ 🔮 進化結晶：**`{p['crystals']:,}個`**\nリストから選択してください。",
+        color=discord.Color.green()
+    )
+    await interaction.response.send_message(embed=embed, view=ArmoryRootView(chars, weapons), ephemeral=True)
+
+async def open_facility_panel(interaction: discord.Interaction):
+    uid = interaction.user.id
+    ensure_player(uid)
+    await interaction.response.send_message(embed=build_facility_embed(uid), view=FacilityPanelView(uid), ephemeral=True)
+
+async def open_rank_panel(interaction: discord.Interaction):
+    uid = interaction.user.id
+    ensure_player(uid)
+    opponent_id = next((q for q in list(MATCH_QUEUE.keys()) if q != uid), None)
+    if opponent_id:
+        opp_inter = MATCH_QUEUE.pop(opponent_id)
+        _, _, _, p1_pwr = get_player_combat_stats(uid)
+        _, _, _, p2_pwr = get_player_combat_stats(opponent_id)
+        p1_win = (p1_pwr * random.uniform(0.9, 1.15)) >= (p2_pwr * random.uniform(0.9, 1.15))
+        winner_id = uid if p1_win else opponent_id
+        loser_id = opponent_id if p1_win else uid
+        rp_gain = random.randint(30, 50)
+        conn = get_db()
+        conn.execute("UPDATE players SET rank_points = rank_points + ? WHERE user_id = ?", (rp_gain, winner_id))
+        conn.execute("UPDATE players SET rank_points = MAX(100, rank_points - ?) WHERE user_id = ?", (rp_gain // 2, loser_id))
+        conn.commit()
+        conn.close()
+        add_guild_stars(winner_id, 3)
+        await sync_rank_and_badges(interaction.guild, winner_id)
+        await sync_rank_and_badges(interaction.guild, loser_id)
+        res_embed = discord.Embed(
+            title="⚔️ ランクマッチ決着！！",
+            description=f"🏆 **勝者**：<@{winner_id}>（`+{rp_gain} RP` / 団貢献 `+3★`）\n💀 **敗者**：<@{loser_id}>（`-{rp_gain // 2} RP`）",
+            color=discord.Color.gold()
+        )
+        await interaction.response.send_message(embed=res_embed, ephemeral=True)
+        try:
+            await opp_inter.edit_original_response(content="⚔️ 対戦相手が見つかりました！", embed=res_embed, view=None)
+        except Exception:
+            pass
+        return
+    MATCH_QUEUE[uid] = interaction
+    wait_embed = discord.Embed(
+        title="⏳ ランクマッチ対戦相手を検索中……",
+        description="他プレイヤーが対戦を押すと即座に開始されます！やめる場合は下のボタンを押してください。",
+        color=discord.Color.orange()
+    )
+    await interaction.response.send_message(embed=wait_embed, view=MatchmakingView(uid), ephemeral=True)
+async def open_guild_panel(interaction: discord.Interaction):
+    uid = interaction.user.id
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT guild_id, guild_role FROM players WHERE user_id = ?", (uid,)).fetchone()
+    top_guilds = conn.execute("SELECT * FROM guilds ORDER BY stars DESC LIMIT 5").fetchall()
+    rank_txt = "\n".join([f"{i+1}位：**{g['name']}**（Lv.{g['level']} / ⭐ `{g['stars']:,}★`）" for i, g in enumerate(top_guilds)]) or "まだ騎士団がありません"
+    if p["guild_id"] > 0:
+        g = conn.execute("SELECT * FROM guilds WHERE id = ?", (p["guild_id"],)).fetchone()
+        m_cnt = conn.execute("SELECT COUNT(*) AS c FROM players WHERE guild_id = ?", (p["guild_id"],)).fetchone()["c"]
+        vice_disp = f"<@{g['vice_leader_id']}>" if g["vice_leader_id"] > 0 else "未任命"
+        my_info = (
+            f"🛡️ **所属騎士団**：**『{g['name']}』**（団Lv.**`{g['level']}`** / `{m_cnt}/15名`）\n"
+            f"👑 団長：<@{g['leader_id']}> ｜ 🎖️ 副団長：{vice_disp}\n"
+            f"⭐ **功績の星**：**`{g['stars']:,}★`** ｜ 役職：**`【{p['guild_role']}】`**"
+        )
+    else:
+        my_info = "現在どの騎士団にも所属していません。"
+    conn.close()
+    embed = discord.Embed(title="🏰 魔法騎士団（ギルド）本部", description=f"{my_info}\n\n**【🏆 騎士団ランキング TOP5】**\n{rank_txt}", color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, view=GuildPanelView(uid, p["guild_id"], p["guild_role"]), ephemeral=True)
+
+async def open_profile_panel(interaction: discord.Interaction):
+    uid = interaction.user.id
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT * FROM players WHERE user_id = ?", (uid,)).fetchone()
+    uc = conn.execute("SELECT * FROM user_chars WHERE user_id = ? AND char_id = ?", (uid, p["equipped_char_id"])).fetchone()
+    char_cnt = conn.execute("SELECT COUNT(*) AS c FROM user_chars WHERE user_id = ?", (uid,)).fetchone()["c"]
+    top_players = conn.execute("SELECT user_id, rank_points FROM players WHERE user_id != ? ORDER BY rank_points DESC LIMIT 5", (OWNER_ID,)).fetchall()
+    conn.close()
+    cid = p["equipped_char_id"]
+    c_data = CHARACTERS.get(cid, CHARACTERS[1])
+    _, _, _, pwr = get_player_combat_stats(uid)
+    cur_tier = GOD_TITLE if uid == OWNER_ID else next((t for r, t in reversed(RANK_TIERS) if p["rank_points"] >= r), "見習い冒険者")
+    top_lines = "\n".join([f"{i+1}位：<@{r['user_id']}> — **`{r['rank_points']:,} RP`**" for i, r in enumerate(top_players)]) or "集計中"
+    titles = [t for t in p["unlocked_titles"].split("|") if t]
+    embed = discord.Embed(
+        title=f"🪪 冒険者戦績カード — {interaction.user.display_name}",
+        description=(
+            f"🎖️ **階級**：**`{cur_tier}`**（`{p['rank_points']:,} RP`）｜ 肩書き：**`{p['active_title']}`**\n"
+            f"⚔️ **出撃キャラ**：`[{uc['rarity']}] No.{cid:03d} {c_data['name']}`（Lv.{uc['level']}/{get_max_level(uc['limit_break'])}）\n"
+            f"💥 **総合戦闘力**：**`{pwr:,}`** ｜ 📚 図鑑：**`{char_cnt}/{len(CHARACTERS)}体`**\n"
+            f"💎 石：`{p['gems']:,}` ｜ 💰 `{p['gold']:,}G` ｜ 🔮 結晶：`{p['crystals']:,}個`\n\n"
+            f"**【👑 サーバー内 序列ランキング TOP5】**\n{top_lines}"
+        ),
+        color=discord.Color.gold()
+    )
+    v = discord.ui.View(timeout=120)
+    if titles:
+        v.add_item(TitleChangeSelect(titles))
+    await interaction.response.send_message(embed=embed, view=v, ephemeral=True)
+
+class QuestOnlyView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="⚔️ 出撃（経験値狩り・ストーリー）", style=discord.ButtonStyle.danger, custom_id="only_quest_btn")
-    async def q_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await RPGHubPanelView().sortie_btn.callback(interaction)
+    async def q_btn(self, interaction: discord.Interaction, button: discord.ui.Button): await open_sortie_panel(interaction)
 
 class GachaOnlyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="🎰 召喚の祭壇を開く（恒常・限定・武器）", style=discord.ButtonStyle.primary, custom_id="only_gacha_btn")
-    async def g_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await RPGHubPanelView().gacha_btn.callback(interaction)
+    async def g_btn(self, interaction: discord.Interaction, button: discord.ui.Button): await open_gacha_panel(interaction)
 
 class ArmoryOnlyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🛡️ 編成・進化（C➡MCR）・売却", style=discord.ButtonStyle.success, custom_id="only_armory_btn")
-    async def a_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await RPGHubPanelView().armory_btn.callback(interaction)
-
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="🛡️ 編成・進化（1段階ずつ）・売却", style=discord.ButtonStyle.success, custom_id="only_armory_btn")
+    async def a_btn(self, interaction: discord.Interaction, button: discord.ui.Button): await open_armory_panel(interaction)
     @discord.ui.button(label="🏛️ 領地施設強化", style=discord.ButtonStyle.secondary, custom_id="only_fac_btn")
-    async def f_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await RPGHubPanelView().facility_btn.callback(interaction)
+    async def f_btn(self, interaction: discord.Interaction, button: discord.ui.Button): await open_facility_panel(interaction)
 
 class RankMatchOnlyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="🏆 ランクマッチ対戦開始（待機＆キャンセル）", style=discord.ButtonStyle.danger, custom_id="only_rank_btn")
-    async def r_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await RPGHubPanelView().rank_btn.callback(interaction)
+    async def r_btn(self, interaction: discord.Interaction, button: discord.ui.Button): await open_rank_panel(interaction)
 
 class GuildOnlyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="🏰 魔法騎士団本部を開く", style=discord.ButtonStyle.primary, custom_id="only_guild_btn")
-    async def gu_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await RPGHubPanelView().guild_btn.callback(interaction)
+    async def gu_btn(self, interaction: discord.Interaction, button: discord.ui.Button): await open_guild_panel(interaction)
 
 class ProfileOnlyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
+    def __init__(self): super().__init__(timeout=None)
     @discord.ui.button(label="🪪 戦績カード・ランキング・肩書き変更", style=discord.ButtonStyle.secondary, custom_id="only_prof_btn")
-    async def p_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await RPGHubPanelView().profile_btn.callback(interaction)
+    async def p_btn(self, interaction: discord.Interaction, button: discord.ui.Button): await open_profile_panel(interaction)
 
 @bot.tree.command(name="panel_set", description="【創造神専用】チャンネルごとに機能別パネルを設置する")
-@app_commands.describe(panel_type="設置するパネルの種類")
 @app_commands.choices(panel_type=[
     app_commands.Choice(name="⚔️ 出撃・ストーリーパネル", value="quest"),
     app_commands.Choice(name="🎰 ガチャ召喚パネル", value="gacha"),
@@ -2070,18 +2192,19 @@ async def cmd_panel_set(interaction: discord.Interaction, panel_type: app_comman
     if interaction.user.id != OWNER_ID:
         await interaction.response.send_message("❌ 創造神専用コマンドです。", ephemeral=True)
         return
-    t = panel_type.value
     configs = {
         "quest": ("⚔️ 冒険・ストーリー出撃口", "経験値狩り（連戦）および全10章ストーリーモードへ出撃できます。", discord.Color.red(), QuestOnlyView()),
         "gacha": ("🎰 召喚の祭壇（恒常・限定PU・武器）", "ガチャ石を消費して全200キャラ＆全50武器を召喚できます。", discord.Color.purple(), GachaOnlyView()),
-        "armory": ("🛡️ 鍛冶・育成・領地施設拠点", "キャラ・武器の装備、7段階進化（C➡MCR）、売却、4種の施設強化が行えます。", discord.Color.green(), ArmoryOnlyView()),
+        "armory": ("🛡️ 鍛冶・育成・領地施設拠点", "キャラ・武器の装備、段階進化（C➡MCR）、売却、4種の施設強化が行えます。", discord.Color.green(), ArmoryOnlyView()),
         "rank": ("🏆 ランクマッチ闘技場", "サーバー内プレイヤーと対戦して階級を上げ、1位【👑現・勇者王】を目指せ！", discord.Color.gold(), RankMatchOnlyView()),
         "guild": ("🏰 魔法騎士団本部", "騎士団の創設・入団・副団長任命・団レベル強化・功績の★ランキングを確認できます。", discord.Color.blurple(), GuildOnlyView()),
         "profile": ("🪪 冒険者ギルド受付（戦績・肩書き）", "自分の戦績カード確認、サーバー序列ランキング、解放した肩書きの付け替えができます。", discord.Color.teal(), ProfileOnlyView()),
     }
-    title, desc, col, view = configs[t]
+    title, desc, col, view = configs[panel_type.value]
     await interaction.channel.send(embed=discord.Embed(title=title, description=desc, color=col), view=view)
     await interaction.response.send_message(f"✅ **{title}** を設置しました！", ephemeral=True)
 
 if __name__ == "__main__":
+    for v in (QuestOnlyView, GachaOnlyView, ArmoryOnlyView, RankMatchOnlyView, GuildOnlyView, ProfileOnlyView):
+        bot.add_view(v())
     asyncio.run(main())
