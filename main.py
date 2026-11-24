@@ -2001,7 +2001,7 @@ async def main():
     async with server:
         async with bot:
             await bot.start(TOKEN)
-　　# ==========================================
+# ==========================================
 # 15. 機能別専用パネル（一番下に追記するだけでOK）
 # ==========================================
 class QuestOnlyView(discord.ui.View):
