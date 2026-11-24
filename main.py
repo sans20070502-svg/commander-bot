@@ -6,6 +6,8 @@ import os
 import random
 import asyncio
 from datetime import datetime, timezone, timedelta
+import sys
+from gacha import GachaPanelView
 
 # ==========================================
 # 1. 基本設定・環境変数
@@ -1858,7 +1860,8 @@ async def open_gacha_panel(interaction: discord.Interaction):
         description=f"💎 所持ガチャ石：**`{p['gems']:,}個`**\n{lim_desc}\n\n・キャラ被り1体ごとに上限 **+20レベ解放**！",
         color=discord.Color.purple()
     )
-    await interaction.response.send_message(embed=embed, view=GachaPanelView(uid), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=GachaPanelView(uid, sys.modules[__name__]), ephemeral=True)
+
 
 async def open_armory_panel(interaction: discord.Interaction):
     uid = interaction.user.id
