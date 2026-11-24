@@ -1,6 +1,7 @@
 import discord
 import random
 
+
 class GachaPanelView(discord.ui.View):
     def __init__(self, user_id: int, db_mod):
         super().__init__(timeout=180)
@@ -27,9 +28,10 @@ class GachaPanelView(discord.ui.View):
         conn.execute("UPDATE players SET gems = gems - ? WHERE user_id = ?", (cost, uid))
         pools = {
             r: [c for c in self.db.CHARACTERS.values() if c["base_rarity"] == r and not c.get("is_god_custom")]
-            for r in ["C", "R", "SR", "SSR", "UR", "LR"]
+            for r in ["C", "R", "SR", "SSR", "UR", "LR", "MCR"]
         }
 
+        mcr_rate = 2 if pools["MCR"] else 0  # 0.2%
         lr_rate = int(self.db.get_state("normal_lr_rate_permille", "5"))
         ur_rate = int(self.db.get_state("normal_ur_rate_permille", "30"))
         pu_cid = int(self.db.get_state("limited_gacha_char_id", "200"))
@@ -45,7 +47,9 @@ class GachaPanelView(discord.ui.View):
                 pu_mark = "🌟【PU確定!!】"
             else:
                 pu_mark = ""
-                if roll <= lr_rate:
+                if roll <= mcr_rate:
+                    rar = "MCR"
+                elif roll <= (mcr_rate + lr_rate):
                     rar = "LR"
                 elif roll <= ur_rate:
                     rar = "UR"
@@ -74,6 +78,7 @@ class GachaPanelView(discord.ui.View):
         header = f"🌟 {pu_title} {count}連結果！" if is_limited else f"🎰 恒常キャラ召喚 {count}連結果！"
         embed = discord.Embed(title=header, description="\n".join(lines), color=discord.Color.gold() if is_limited else discord.Color.purple())
         await interaction.edit_original_response(embed=embed, view=self)
+
     async def _roll_weapon(self, interaction: discord.Interaction, count: int):
         await interaction.response.defer()
         uid = interaction.user.id
@@ -158,6 +163,11 @@ class GachaPanelView(discord.ui.View):
                 for c in god_chars[-10:]
             ]
             embed.add_field(name="👑 創造神が追加した特別キャラ一覧", value="\n".join(g_lines), inline=False)
+
+        mcr_chars = [c for c in self.db.CHARACTERS.values() if c["base_rarity"] == "MCR" and not c.get("is_god_custom")]
+        if mcr_chars:
+            m_lines = [f"・`[MCR] No.{c['id']:03d} {c['name']}`（{c['passive_name']} / {c['ult_name']}）" for c in mcr_chars]
+            embed.add_field(name="🌌 恒常MCRキャラ一覧（基本排出率: 0.2%）", value="\n".join(m_lines), inline=False)
 
         lr_chars = [c for c in self.db.CHARACTERS.values() if c["base_rarity"] == "LR" and not c.get("is_god_custom")]
         lr_lines = [f"・`[LR] No.{c['id']:03d} {c['name']}`（{c['passive_name']} / {c['ult_name']}）" for c in lr_chars]
