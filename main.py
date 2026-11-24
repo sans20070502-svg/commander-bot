@@ -2284,6 +2284,7 @@ async def cmd_spawn_raid(
 # ==========================================
 # 17. Render用ヘルスチェックサーバー & Bot起動
 # ==========================================
+from aiohttp import web
 
 async def handle_health(request):
     return web.Response(text="Commander RPG Bot is running!", status=200)
