@@ -1832,157 +1832,216 @@ class BillingShopView(discord.ui.View):
 
 async def open_sortie_panel(interaction: discord.Interaction):
     uid = interaction.user.id
-    user = get_user(uid, interaction.user.display_name)
-    stamina = user.get("stamina", 100)
-    max_stamina = user.get("max_stamina", 100)
-    chapter = user.get("chapter", 1)
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT story_chapter, equipped_char_id FROM players WHERE user_id = ?", (uid,)).fetchone()
+    conn.close()
+
+    c_data = CHARACTERS.get(p["equipped_char_id"], CHARACTERS.get(1))
+    _, _, _, pwr = get_player_combat_stats(uid)
 
     embed = discord.Embed(
         title="⚔️ 出撃・クエスト選択",
         description=(
-            f"指揮官 **{interaction.user.display_name}**、出撃先を選択してください。\n"
-            f"⚡ スタミナ: **{stamina} / {max_stamina}**\n"
-            f"📖 現在のストーリー進行度: **第{chapter}章**"
+            f"指揮官 **{interaction.user.display_name}**、作戦を選択してください。\n"
+            f"🛡️ 出撃キャラ：**{c_data['name']}**（総合戦闘力：**`{pwr:,}`**）\n"
+            f"📖 ストーリー進行度：**第{min(p['story_chapter'], len(STORY_CHAPTERS))}章**"
         ),
         color=discord.Color.red()
     )
-    if GUERRILLA_ACTIVE:
+    if is_guerrilla_now():
         embed.add_field(
             name="🔥 ゲリライベント開催中！",
-            value="現在、獲得経験値＆魔晶石が **3倍** になっています！",
+            value="現在、獲得経験値・資金・進化結晶が **3倍** になっています！",
             inline=False
         )
-    view = SortieView(uid)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=SortieSelectView(uid), ephemeral=True)
+
+
+async def open_raid_panel(interaction: discord.Interaction):
+    if get_state("raid_active", "0") != "1":
+        await interaction.response.send_message("🕊️ 現在出現中の運営レイドボスはいません。次回の降臨をお待ちください！", ephemeral=True)
+        return
+    boss_name = get_state("raid_name", "運営降臨ボス")
+    cur_hp = int(get_state("raid_hp", "0"))
+    max_hp = int(get_state("raid_max_hp", "1"))
+    hp_bar = make_hp_bar(cur_hp, max_hp, 15)
+
+    embed = discord.Embed(
+        title="🚨 【月1回・神出鬼没】運営レイドボス降臨中！！",
+        description=(
+            f"👑 **ボス名**：**{boss_name}**\n"
+            f"🎁 **討伐報酬**：**PayPay 5,000円プレゼント！！**\n\n"
+            f"❤️ **残りHP**：**`{cur_hp:,} / {max_hp:,}`**\n"
+            f"{hp_bar}"
+        ),
+        color=discord.Color.dark_red()
+    )
+    await interaction.response.send_message(embed=embed, view=RaidBossView(), ephemeral=True)
 
 
 async def open_gacha_panel(interaction: discord.Interaction):
     uid = interaction.user.id
-    user = get_user(uid, interaction.user.display_name)
-    crystals = user.get("crystals", 0)
-    tickets = user.get("gacha_tickets", 0)
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT gems, crystals FROM players WHERE user_id = ?", (uid,)).fetchone()
+    conn.close()
 
     embed = discord.Embed(
         title="🔮 次元召喚（ガチャ）",
         description=(
-            f"所持魔晶石: **💎 {crystals:,}個** / 召喚チケット: **🎫 {tickets}枚**\n"
+            f"💎 所持ガチャ石：**`{p['gems']:,} 個`** ｜ 🔮 進化の結晶：**`{p['crystals']:,} 個`**\n"
             "下のボタンから召喚するガチャの種類を選択してください。"
         ),
         color=discord.Color.purple()
     )
-    view = GachaPanelView(uid, sys.modules[__name__])
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=GachaPanelView(uid), ephemeral=True)
 
 
 async def open_armory_panel(interaction: discord.Interaction):
     uid = interaction.user.id
-    user = get_user(uid, interaction.user.display_name)
-    party = json.loads(user.get("party", "[]"))
-    gold = user.get("gold", 0)
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT gold, crystals, equipped_char_id, equipped_weapon_id FROM players WHERE user_id = ?", (uid,)).fetchone()
+    owned_chars = conn.execute("SELECT * FROM user_chars WHERE user_id = ? ORDER BY level DESC, char_id ASC", (uid,)).fetchall()
+    owned_weapons = conn.execute("SELECT * FROM user_weapons WHERE user_id = ? ORDER BY plus_level DESC, weapon_id ASC", (uid,)).fetchall()
+    conn.close()
 
-    party_names = []
-    for idx, cid in enumerate(party, 1):
-        c_data = get_char_instance(uid, cid)
-        if c_data:
-            party_names.append(f"`枠{idx}` ★{c_data['rarity']} **{c_data['name']}** (Lv.{c_data['level']})")
-        else:
-            party_names.append(f"`枠{idx}` *(未編成)*")
+    eq_c = CHARACTERS.get(p["equipped_char_id"], CHARACTERS.get(1))
+    eq_w = WEAPONS[p["equipped_weapon_id"]]["name"] if p["equipped_weapon_id"] in WEAPONS else "なし"
+    _, _, _, pwr = get_player_combat_stats(uid)
 
     embed = discord.Embed(
-        title="🛡️ 兵舎・武装庫（編成・進化・売却）",
+        title="🛡️ 兵舎・武装庫（編成・1段階進化・売却）",
         description=(
-            f"所持資金: **🪙 {gold:,} G**\n\n"
-            "**【現在の出撃部隊】**\n" + ("\n".join(party_names) if party_names else "未編成")
+            f"💰 資金：**`{p['gold']:,} G`** ｜ 🔮 進化の結晶：**`{p['crystals']:,} 個`**\n"
+            f"⚔️ 出撃キャラ：**{eq_c['name']}** ｜ 🗡️ 装備武器：**{eq_w}**\n"
+            f"📊 総合戦闘力：**`{pwr:,}`**\n\n"
+            "下のメニューからキャラ・武器を選択して装備・進化・売却を行えます。"
         ),
         color=discord.Color.blue()
     )
-    view = ArmoryView(uid)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=ArmoryRootView(owned_chars, owned_weapons), ephemeral=True)
+
+
 async def open_facility_panel(interaction: discord.Interaction):
     uid = interaction.user.id
-    user = get_user(uid, interaction.user.display_name)
-    gold = user.get("gold", 0)
-    f_lv = json.loads(user.get("facilities", '{"barracks":1,"mine":1,"library":1,"wall":1}'))
-
-    embed = discord.Embed(
-        title="🏰 領地開発・施設強化",
-        description=(
-            f"所持資金: **🪙 {gold:,} G**\n"
-            "施設を強化すると全キャラの基礎ステータスや資源生産効率が上昇します。\n\n"
-            f"⚔️ **兵舎**: Lv.{f_lv.get('barracks', 1)}（攻撃力ボーナス）\n"
-            f"⛏️ **魔晶鉱山**: Lv.{f_lv.get('mine', 1)}（資金・結晶獲得量UP）\n"
-            f"📚 **大図書館**: Lv.{f_lv.get('library', 1)}（獲得経験値UP）\n"
-            f"🛡️ **城壁**: Lv.{f_lv.get('wall', 1)}（HP・防御力ボーナス）"
-        ),
-        color=discord.Color.gold()
-    )
-    view = FacilityView(uid)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    ensure_player(uid)
+    await interaction.response.send_message(embed=build_facility_embed(uid), view=FacilityPanelView(uid), ephemeral=True)
 
 
 async def open_rank_panel(interaction: discord.Interaction):
     uid = interaction.user.id
-    user = get_user(uid, interaction.user.display_name)
-    rp = user.get("rank_points", 1000)
-    rank_name = get_rank_title(rp)
-    wins = user.get("pvp_wins", 0)
-    losses = user.get("pvp_losses", 0)
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT rank_points FROM players WHERE user_id = ?", (uid,)).fetchone()
+    rp = p["rank_points"]
+    _, _, _, my_pwr = get_player_combat_stats(uid)
 
-    embed = discord.Embed(
-        title="🏆 帝国闘技場（ランクマッチ・下剋上）",
+    if uid in MATCH_QUEUE:
+        conn.close()
+        await interaction.response.send_message("⏳ すでにランクマッチのマッチング待機中です。", ephemeral=True)
+        return
+
+    opponent_id = next((q_uid for q_uid in MATCH_QUEUE if q_uid != uid), None)
+    if opponent_id is None:
+        conn.close()
+        MATCH_QUEUE[uid] = interaction
+        embed = discord.Embed(
+            title="🏆 帝国大闘技場 — マッチング待機中...",
+            description=f"現在のRP：**`{rp:,} RP`**（戦闘力：**`{my_pwr:,}`**）\n他の指揮官が対戦ボタンを押すと即座にバトルが開始されます！",
+            color=discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed, view=MatchmakingView(uid), ephemeral=True)
+        return
+
+    del MATCH_QUEUE[opponent_id]
+    opp_p = conn.execute("SELECT rank_points FROM players WHERE user_id = ?", (opponent_id,)).fetchone()
+    opp_rp = opp_p["rank_points"] if opp_p else 1000
+    _, _, _, opp_pwr = get_player_combat_stats(opponent_id)
+
+    my_score = my_pwr * random.uniform(0.9, 1.1)
+    opp_score = opp_pwr * random.uniform(0.9, 1.1)
+    i_win = my_score >= opp_score
+    winner_id = uid if i_win else opponent_id
+    loser_id = opponent_id if i_win else uid
+    w_rp = rp if i_win else opp_rp
+    l_rp = opp_rp if i_win else rp
+
+    gekokujo = max(0, (l_rp - w_rp) // 10)
+    gain_rp = 30 + gekokujo
+    loss_rp = max(10, 20 - (gekokujo // 2))
+
+    conn.execute("UPDATE players SET rank_points = rank_points + ?, gems = gems + 50 WHERE user_id = ?", (gain_rp, winner_id))
+    conn.execute("UPDATE players SET rank_points = MAX(0, rank_points - ?) WHERE user_id = ?", (loss_rp, loser_id))
+    conn.commit()
+    conn.close()
+
+    if gekokujo >= 30:
+        unlock_title(winner_id, "【下剋上の覇者（ジャイアントキリング）】")
+    await sync_rank_and_badges(interaction.guild, winner_id)
+    await sync_rank_and_badges(interaction.guild, loser_id)
+
+    gk_txt = f"\n🔥 **下剋上ボーナス発動！**（追加 `+{gekokujo} RP`）" if gekokujo > 0 else ""
+    res_embed = discord.Embed(
+        title="⚔️ ランクマッチ決着！！",
         description=(
-            f"現在の階級: **{rank_name}** (`{rp} RP`)\n"
-            f"対戦戦績: **{wins}勝 {losses}敗**\n\n"
-            "上位階級の指揮官に勝利すると「下剋上ボーナス」で大量RPを獲得！\n"
-            "下のボタンからマッチング待機列に参加してください。"
+            f"🏆 **勝者**：<@{winner_id}>（**`+{gain_rp} RP`** ＆ 💎`+50個`）{gk_txt}\n"
+            f"💀 **敗者**：<@{loser_id}>（**`-{loss_rp} RP`**）"
         ),
-        color=discord.Color.dark_red()
+        color=discord.Color.gold()
     )
-    view = RankMatchControlView(uid)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=res_embed)
 
 
 async def open_guild_panel(interaction: discord.Interaction):
     uid = interaction.user.id
-    user = get_user(uid, interaction.user.display_name)
-    guild_id = user.get("guild_id")
-
-    if guild_id:
-        g_info = get_guild(guild_id)
-        g_name = g_info["name"] if g_info else "所属騎士団"
-        g_lv = g_info["level"] if g_info else 1
-        desc = f"所属騎士団: **⚜️ {g_name}** (団ランク Lv.{g_lv})\n団員との協力任務や騎士団資金の寄付が可能です。"
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT guild_id, guild_role FROM players WHERE user_id = ?", (uid,)).fetchone()
+    gid = p["guild_id"]
+    g_role = p["guild_role"]
+    if gid > 0:
+        g = conn.execute("SELECT * FROM guilds WHERE id = ?", (gid,)).fetchone()
+        cnt = conn.execute("SELECT COUNT(*) AS c FROM players WHERE guild_id = ?", (gid,)).fetchone()["c"]
+        desc = (
+            f"🏰 **所属騎士団**：**『{g['name']}』**（Lv.{g['level']}）\n"
+            f"🎖️ **あなたの役職**：**【{g_role}】** ｜ 👥 団員数：`{cnt}/15名`\n"
+            f"⭐ **団の功績**：`{g['stars']:,} ★`（全ステータス `+{(g['level']-1)*3}%`）"
+        )
     else:
-        desc = "現在どの騎士団にも所属していません。\n既存の騎士団へ入団するか、新たな騎士団を創設できます。"
+        desc = "現在どの騎士団にも所属していません。\n新しい騎士団を創設するか、既存の騎士団へ入団できます。"
+    conn.close()
 
-    embed = discord.Embed(
-        title="⚜️ 王国騎士団本部",
-        description=desc,
-        color=discord.Color.teal()
-    )
-    view = GuildControlView(uid)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    embed = discord.Embed(title="⚜️ 王国騎士団・総本部", description=desc, color=discord.Color.teal())
+    await interaction.response.send_message(embed=embed, view=GuildPanelView(uid, gid, g_role), ephemeral=True)
 
 
 async def open_profile_panel(interaction: discord.Interaction):
     uid = interaction.user.id
-    user = get_user(uid, interaction.user.display_name)
-    rp = user.get("rank_points", 1000)
-    title_str = user.get("equipped_title", "新米指揮官")
-    level = user.get("level", 1)
-    crystals = user.get("crystals", 0)
-    gold = user.get("gold", 0)
+    ensure_player(uid)
+    conn = get_db()
+    p = conn.execute("SELECT * FROM players WHERE user_id = ?", (uid,)).fetchone()
+    top5 = conn.execute("SELECT user_id, rank_points FROM players WHERE user_id != ? ORDER BY rank_points DESC LIMIT 5", (OWNER_ID,)).fetchall()
+    conn.close()
+
+    _, _, _, pwr = get_player_combat_stats(uid)
+    rank_lines = "\n".join([f"`{i+1}位` <@{r['user_id']}> — **`{r['rank_points']:,} RP`**" for i, r in enumerate(top5)]) or "データなし"
+    titles = [t for t in p["unlocked_titles"].split("|") if t]
 
     embed = discord.Embed(
         title=f"📜 指揮官戦績カード｜{interaction.user.display_name}",
         description=(
-            f"🏷️ 装備中の肩書き: **【{title_str}】**\n"
-            f"🎖️ 指揮官Lv: **{level}** / 階級: **{get_rank_title(rp)}** (`{rp} RP`)\n"
-            f"💎 魔晶石: **{crystals:,}** / 🪙 資金: **{gold:,} G**"
+            f"🏷️ **現在の肩書き**：**`{p['active_title']}`**\n"
+            f"⚔️ **総合戦闘力**：**`{pwr:,}`** ｜ 🏆 **ランクP**：**`{p['rank_points']:,} RP`**\n"
+            f"💎 ガチャ石：`{p['gems']:,}` ｜ 💰 資金：`{p['gold']:,}G` ｜ 🔮 結晶：`{p['crystals']:,}`\n\n"
+            f"**【🏆 サーバー内 闘技場TOP5】**\n{rank_lines}"
         ),
         color=discord.Color.blurple()
     )
-    view = ProfileControlView(uid)
+    view = discord.ui.View(timeout=180)
+    if titles:
+        view.add_item(TitleChangeSelect(titles))
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 # ==========================================
 # 14. 永続Viewクラス群（チャンネル常設パネル用）
@@ -2080,13 +2139,11 @@ class ProfileOnlyView(discord.ui.View):
     )
     async def btn_profile(self, interaction: discord.Interaction, button: discord.ui.Button):
         await open_profile_panel(interaction)
+
+
 # ==========================================
 # 15. RPGCommandBot 本体 & 4時間自動ゲリラループ
 # ==========================================
-
-GUERRILLA_ACTIVE = False
-GUERRILLA_END_TIME = None
-
 
 class RPGCommandBot(commands.Bot):
     def __init__(self):
@@ -2096,7 +2153,6 @@ class RPGCommandBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        # 永続Viewの全登録（再起動後もボタンを有効化）
         self.add_view(QuestOnlyView())
         self.add_view(GachaOnlyView())
         self.add_view(ArmoryOnlyView())
@@ -2104,12 +2160,11 @@ class RPGCommandBot(commands.Bot):
         self.add_view(GuildOnlyView())
         self.add_view(ProfileOnlyView())
         self.add_view(BillingShopView())
+        self.add_view(RaidBossView())
 
-        # 4時間ごとの自動ゲリラループ開始
         if not self.auto_guerrilla_loop.is_running():
             self.auto_guerrilla_loop.start()
 
-        # スラッシュコマンド同期
         await self.tree.sync()
         print("✅ スラッシュコマンドと全永続Viewの同期が完了しました。")
 
@@ -2121,14 +2176,10 @@ class RPGCommandBot(commands.Bot):
 
     @tasks.loop(hours=4)
     async def auto_guerrilla_loop(self):
-        global GUERRILLA_ACTIVE, GUERRILLA_END_TIME
-        GUERRILLA_ACTIVE = True
-        GUERRILLA_END_TIME = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=30)
+        end_ts = int((datetime.now(timezone.utc) + timedelta(minutes=30)).timestamp())
+        set_state("guerrilla_active", "1")
+        set_state("guerrilla_end_ts", str(end_ts))
         print("🔥 [AUTO] 30分間の経験値＆結晶3倍ゲリラが自動発動しました！")
-        await asyncio.sleep(1800)
-        GUERRILLA_ACTIVE = False
-        GUERRILLA_END_TIME = None
-        print("❄️ [AUTO] 自動ゲリライベントが終了しました。")
 
     @auto_guerrilla_loop.before_loop
     async def before_guerrilla_loop(self):
@@ -2136,6 +2187,10 @@ class RPGCommandBot(commands.Bot):
 
 
 bot = RPGCommandBot()
+# ==========================================
+# 16. OWNER_ID 限定スラッシュコマンド群
+# ==========================================
+
 def is_owner():
     async def predicate(interaction: discord.Interaction) -> bool:
         owner_id = int(os.environ.get("OWNER_ID", 0))
@@ -2231,33 +2286,26 @@ async def cmd_panel_set(interaction: discord.Interaction, panel_type: app_comman
 async def cmd_god_panel(interaction: discord.Interaction):
     embed = discord.Embed(
         title="👑 創造神コントロールパネル",
-        description="全ユーザーの魔晶石・資金・階級・スタミナ操作やデバッグを実行します。",
+        description="臨時強キャラ創造・限定ガチャ操作・無限リソース生成・即MCR覚醒を実行します。",
         color=discord.Color.gold()
     )
     await interaction.response.send_message(embed=embed, view=GodControlView(), ephemeral=True)
 
-@bot.tree.command(name="guerrilla", description="【運営専用】経験値＆魔晶石3倍ゲリラを即時発動します")
+
+@bot.tree.command(name="guerrilla", description="【運営専用】経験値＆進化結晶3倍ゲリラを即時発動します")
 @app_commands.describe(minutes="開催時間（分・デフォルト30分）")
 @is_owner()
 async def cmd_guerrilla(interaction: discord.Interaction, minutes: int = 30):
-    global GUERRILLA_ACTIVE, GUERRILLA_END_TIME
-    GUERRILLA_ACTIVE = True
-    GUERRILLA_END_TIME = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+    end_ts = int((datetime.now(timezone.utc) + timedelta(minutes=minutes)).timestamp())
+    set_state("guerrilla_active", "1")
+    set_state("guerrilla_end_ts", str(end_ts))
 
     embed = discord.Embed(
-        title="🔥 【緊急ゲリラ発動】経験値＆魔晶石 3倍フィーバー！",
-        description=f"創造神の恩寵により、今から **{minutes}分間** 全クエストの獲得経験値と魔晶石が **3倍** になります！",
+        title="🔥 【緊急ゲリラ発動】経験値・資金・進化結晶 3倍フィーバー！",
+        description=f"創造神の恩寵により、今から **{minutes}分間** 全クエストの獲得経験値・資金・進化結晶が **3倍** になります！",
         color=discord.Color.orange()
     )
     await interaction.response.send_message(embed=embed)
-
-    async def _end_timer(sec: int):
-        global GUERRILLA_ACTIVE, GUERRILLA_END_TIME
-        await asyncio.sleep(sec)
-        GUERRILLA_ACTIVE = False
-        GUERRILLA_END_TIME = None
-
-    asyncio.create_task(_end_timer(minutes * 60))
 
 
 @bot.tree.command(name="spawn_raid", description="【運営専用】月1回の運営レイドボスを降臨させます")
@@ -2268,23 +2316,35 @@ async def cmd_spawn_raid(
     boss_name: str = "終焉の魔竜・バハムート",
     max_hp: int = 5000000
 ):
-    init_raid_boss(boss_name, max_hp)
+    set_state("raid_active", "1")
+    set_state("raid_name", boss_name)
+    set_state("raid_max_hp", str(max_hp))
+    set_state("raid_hp", str(max_hp))
+
+    conn = get_db()
+    conn.execute("DELETE FROM raid_damage")
+    conn.commit()
+    conn.close()
+
+    hp_bar = make_hp_bar(max_hp, max_hp, 15)
     embed = discord.Embed(
-        title="🐉 【緊急警告】運営レイドボス降臨！",
+        title="🚨 【月1回・神出鬼没】運営レイドボス降臨！！",
         description=(
-            f"災厄の巨獣 **{boss_name}** が戦場に現れました！\n"
-            f"❤️ 総HP: **{max_hp:,}**\n\n"
-            "出撃パネルの「🐉 運営レイド挑戦」から全指揮官で討伐に挑んでください！"
+            f"👑 **ボス名**：**{boss_name}**\n"
+            f"🎁 **討伐報酬**：**PayPay 5,000円プレゼント！！**\n\n"
+            f"❤️ **残りHP**：**`{max_hp:,} / {max_hp:,}`**\n"
+            f"{hp_bar}"
         ),
-        color=discord.Color.dark_purple()
+        color=discord.Color.dark_red()
     )
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, view=RaidBossView())
 
 
 # ==========================================
 # 17. Render用ヘルスチェックサーバー & Bot起動
 # ==========================================
 from aiohttp import web
+
 
 async def handle_health(request):
     return web.Response(text="Commander RPG Bot is running!", status=200)
@@ -2314,3 +2374,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
