@@ -1814,7 +1814,8 @@ class BillingPackSelect(discord.ui.Select):
             discord.SelectOption(label="💎 冒険者パック（1,500円）", value="pack_1500", description="ガチャ石 2,000個 ＋ 進化結晶 10個"),
             discord.SelectOption(label="👑 覇王パック（5,000円）", value="pack_5000", description="ガチャ石 7,500個 ＋ 結晶 40個 ＋ 限定肩書き"),
         ]
-        super().__init__(placeholder="購入する課金パックを選択してください", min_values=1, max_values=1, options=options)
+        super().__init__(custom_id="billing_pack_select", placeholder="購入する課金パックを選択してください", min_values=1, max_values=1, options=options)
+
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(BillingApplyModal(next(iter(self.values))))
