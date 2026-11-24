@@ -31,7 +31,7 @@ class GachaPanelView(discord.ui.View):
             for r in ["C", "R", "SR", "SSR", "UR", "LR", "MCR"]
         }
 
-        mcr_rate = 2 if pools["MCR"] else 0  # 0.2%
+        mcr_rate = 2 if pools["MCR"] else 0
         lr_rate = int(self.db.get_state("normal_lr_rate_permille", "5"))
         ur_rate = int(self.db.get_state("normal_ur_rate_permille", "30"))
         pu_cid = int(self.db.get_state("limited_gacha_char_id", "200"))
