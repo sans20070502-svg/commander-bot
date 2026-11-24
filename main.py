@@ -1895,7 +1895,7 @@ async def open_gacha_panel(interaction: discord.Interaction):
         ),
         color=discord.Color.purple()
     )
-    await interaction.response.send_message(embed=embed, view=GachaPanelView(uid), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=GachaPanelView(uid, sys.modules[__name__]), ephemeral=True)
 
 
 async def open_armory_panel(interaction: discord.Interaction):
