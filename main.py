@@ -1860,7 +1860,7 @@ async def open_gacha_panel(interaction: discord.Interaction):
         description=f"💎 所持ガチャ石：**`{p['gems']:,}個`**\n{lim_desc}\n\n・キャラ被り1体ごとに上限 **+20レベ解放**！",
         color=discord.Color.purple()
     )
-await interaction.response.send_message(embed=embed, view=GachaPanelView(uid, sys.modules[__name__]), ephemeral=True)
+ await interaction.response.send_message(embed=embed, view=GachaPanelView(uid, sys.modules[__name__]), ephemeral=True)
 
 
 async def open_armory_panel(interaction: discord.Interaction):
