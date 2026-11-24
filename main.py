@@ -2136,6 +2136,106 @@ class RPGCommandBot(commands.Bot):
 
 
 bot = RPGCommandBot()
+def is_owner():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        owner_id = int(os.environ.get("OWNER_ID", 0))
+        if interaction.user.id != owner_id:
+            await interaction.response.send_message(
+                "⛔ このコマンドは創造神（Botオーナー）専用です。", ephemeral=True
+            )
+            return False
+        return True
+    return app_commands.check(predicate)
+
+
+@bot.tree.command(name="panel_set", description="【運営専用】チャンネルに機能別常設パネルを設置します")
+@app_commands.describe(panel_type="設置するパネルの種類を選択")
+@app_commands.choices(panel_type=[
+    app_commands.Choice(name="⚔️ 出撃・レイドパネル (quest)", value="quest"),
+    app_commands.Choice(name="🔮 次元召喚ガチャパネル (gacha)", value="gacha"),
+    app_commands.Choice(name="🛡️ 編成・進化・施設パネル (armory)", value="armory"),
+    app_commands.Choice(name="🏆 ランクマッチ・下剋上パネル (rank)", value="rank"),
+    app_commands.Choice(name="⚜️ 騎士団本部パネル (guild)", value="guild"),
+    app_commands.Choice(name="📜 戦績・ランキング・肩書きパネル (profile)", value="profile"),
+    app_commands.Choice(name="💎 魔晶石ショップ申請パネル (shop)", value="shop"),
+])
+@is_owner()
+async def cmd_panel_set(interaction: discord.Interaction, panel_type: app_commands.Choice[str]):
+    p_val = panel_type.value
+    panels = {
+        "quest": (
+            discord.Embed(
+                title="⚔️ 帝国戦線・出撃ゲート",
+                description="ストーリー攻略・周回クエスト・月1回の運営レイドボスへ出撃できます。\n下のボタンを押して作戦を開始してください。",
+                color=discord.Color.red()
+            ),
+            QuestOnlyView()
+        ),
+        "gacha": (
+            discord.Embed(
+                title="🔮 次元召喚祭壇（ガチャ）",
+                description="恒常ガチャ・期間限定ピックアップ・武器召喚を実行できます。\n排出確率やPU対象もパネル内から確認可能です。",
+                color=discord.Color.purple()
+            ),
+            GachaOnlyView()
+        ),
+        "armory": (
+            discord.Embed(
+                title="🛡️ 兵舎・武装庫＆領地開発",
+                description="部隊編成・キャラの1段階進化・不要装備の売却、および領地4施設の強化を行えます。",
+                color=discord.Color.blue()
+            ),
+            ArmoryOnlyView()
+        ),
+        "rank": (
+            discord.Embed(
+                title="🏆 帝国大闘技場（ランクマッチ）",
+                description="全国の指揮官と競い合い、階級昇格と「下剋上」を狙うPvPアリーナです。",
+                color=discord.Color.dark_red()
+            ),
+            RankMatchOnlyView()
+        ),
+        "guild": (
+            discord.Embed(
+                title="⚜️ 王国騎士団・総本部",
+                description="騎士団の創設・入団申請・団員同士の協力任務や寄付はこちらから。",
+                color=discord.Color.teal()
+            ),
+            GuildOnlyView()
+        ),
+        "profile": (
+            discord.Embed(
+                title="📜 指揮官記録室（戦績・ランキング）",
+                description="自身の戦績確認、サーバー内ランキング閲覧、獲得した肩書きの変更ができます。",
+                color=discord.Color.blurple()
+            ),
+            ProfileOnlyView()
+        ),
+        "shop": (
+            discord.Embed(
+                title="💎 帝国魔晶石ショップ（課金申請窓口）",
+                description="魔晶石パックの購入申請を行えます。申請後、運営承認が完了すると即時付与されます。",
+                color=discord.Color.gold()
+            ),
+            BillingShopView()
+        ),
+    }
+
+    embed, view = panels[p_val]
+    await interaction.channel.send(embed=embed, view=view)
+    await interaction.response.send_message(f"✅ **{panel_type.name}** を設置しました。", ephemeral=True)
+
+
+@bot.tree.command(name="god_panel", description="【運営専用】創造神コントロールパネルを開きます")
+@is_owner()
+async def cmd_god_panel(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="👑 創造神コントロールパネル",
+        description="全ユーザーの魔晶石・資金・階級・スタミナ操作やデバッグを実行します。",
+        color=discord.Color.gold()
+    )
+    await interaction.response.send_message(embed=embed, view=GodControlView(), ephemeral=True)
+
 @bot.tree.command(name="guerrilla", description="【運営専用】経験値＆魔晶石3倍ゲリラを即時発動します")
 @app_commands.describe(minutes="開催時間（分・デフォルト30分）")
 @is_owner()
