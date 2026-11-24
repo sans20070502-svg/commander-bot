@@ -2205,6 +2205,4 @@ async def cmd_panel_set(interaction: discord.Interaction, panel_type: app_comman
     await interaction.response.send_message(f"✅ **{title}** を設置しました！", ephemeral=True)
 
 if __name__ == "__main__":
-    for v in (QuestOnlyView, GachaOnlyView, ArmoryOnlyView, RankMatchOnlyView, GuildOnlyView, ProfileOnlyView):
-        bot.add_view(v())
     asyncio.run(main())
